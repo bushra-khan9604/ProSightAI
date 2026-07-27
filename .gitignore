@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.db
+.venv/
+.env
+frontend/node_modules/
+frontend/dist/
+.pnpm-store/
+logs/
+data/uploads/
+data/vector_store/
+tmp/
+output/
+outputs/
+prosight_env/

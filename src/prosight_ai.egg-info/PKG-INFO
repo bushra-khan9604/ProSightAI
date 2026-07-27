@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: prosight-ai
+Version: 0.2.0
+Summary: Construction project insights agent reference implementation
+Requires-Python: >=3.11
+Requires-Dist: chromadb<2,>=1.0
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: openai-agents<1,>=0.4
+Requires-Dist: openpyxl<4,>=3.1
+Requires-Dist: pydantic<3,>=2.10
+Requires-Dist: pypdf<7,>=5
+Requires-Dist: python-multipart<1,>=0.0.20
+Requires-Dist: uvicorn<1,>=0.34

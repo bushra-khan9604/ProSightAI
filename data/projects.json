@@ -1,0 +1,112 @@
+{
+  "generated_at": "2026-07-15",
+  "currency": "USD",
+  "projects": [
+    {
+      "code": "PRJ-2024-001",
+      "name": "Marina Heights Residential Tower",
+      "status": "active",
+      "client": "Harbor Development LLC",
+      "location": "Dubai Marina, UAE",
+      "contract_value_usd": 84500000,
+      "planned_start": "2024-02-01",
+      "planned_finish": "2026-11-30",
+      "revised_finish": "2027-02-28",
+      "reporting_date": "2026-07-15",
+      "baseline_progress": 78.0,
+      "revised_progress": 72.0,
+      "actual_progress": 68.5,
+      "contacts": [
+        {"name": "Omar Rahman", "project_role": "Project Manager", "email": "omar.rahman@example.com", "mobile": "+971-50-555-0101"},
+        {"name": "Sara Malik", "project_role": "Project Engineer", "email": "sara.malik@example.com", "mobile": "+971-50-555-0102"},
+        {"name": "Daniel Joseph", "project_role": "Planning Engineer", "email": "daniel.joseph@example.com", "mobile": "+971-50-555-0103"},
+        {"name": "Imran Siddiqui", "project_role": "Site Point of Contact", "email": "imran.s@example.com", "mobile": "+971-50-555-0104"},
+        {"name": "Layla Haddad", "project_role": "Client Point of Contact", "email": "layla.h@example-client.com", "mobile": "+971-50-555-0105"}
+      ],
+      "activities": ["Level 34 structural slab", "MEP riser installation", "Curtain wall zones 5–7", "Podium waterproofing"],
+      "manpower": [{"designation": "Civil workers", "count": 128}, {"designation": "MEP technicians", "count": 74}, {"designation": "Steel fixers", "count": 42}, {"designation": "Operators", "count": 16}, {"designation": "Supervisors", "count": 19}],
+      "equipment": [{"type": "Tower cranes", "count": 2}, {"type": "Hoists", "count": 4}, {"type": "Concrete pumps", "count": 2}, {"type": "Generators", "count": 6}, {"type": "Boom lifts", "count": 5}],
+      "total_manhours": 1842600,
+      "milestones": [{"name": "Podium structure", "status": "complete"}, {"name": "Tower topping out", "status": "due 2026-09-18"}, {"name": "Permanent power", "status": "due 2026-10-30"}, {"name": "Authority inspection", "status": "due 2027-01-15"}, {"name": "Handover", "status": "due 2027-02-28"}],
+      "sources": ["Monthly Progress Report MPR-29, rev 1", "Approved Programme Update P6-24, rev 3", "Company Directory snapshot 2026-07-15"]
+    },
+    {
+      "code": "PRJ-2025-004",
+      "name": "Al Noor Community Hospital",
+      "status": "active",
+      "client": "Al Noor Health Authority",
+      "location": "Abu Dhabi, UAE",
+      "contract_value_usd": 126000000,
+      "planned_start": "2025-01-15",
+      "planned_finish": "2027-06-30",
+      "revised_finish": "2027-06-30",
+      "reporting_date": "2026-07-15",
+      "baseline_progress": 54.0,
+      "revised_progress": 53.0,
+      "actual_progress": 54.2,
+      "contacts": [
+        {"name": "Aisha Karim", "project_role": "Project Manager", "email": "aisha.karim@example.com", "mobile": "+971-50-555-0201"},
+        {"name": "Bilal Farooq", "project_role": "Project Engineer", "email": "bilal.f@example.com", "mobile": "+971-50-555-0202"},
+        {"name": "Maya Thomas", "project_role": "Planning Engineer", "email": "maya.thomas@example.com", "mobile": "+971-50-555-0203"},
+        {"name": "Yousef Nasser", "project_role": "Site Point of Contact", "email": "yousef.n@example.com", "mobile": "+971-50-555-0204"},
+        {"name": "Dr. Huda Salem", "project_role": "Client Point of Contact", "email": "huda.s@example-client.com", "mobile": "+971-50-555-0205"}
+      ],
+      "activities": ["Operating theatre MEP rough-in", "Facade installation", "Medical gas piping", "External utilities"],
+      "manpower": [{"designation": "Civil workers", "count": 96}, {"designation": "MEP technicians", "count": 112}, {"designation": "Facade installers", "count": 38}, {"designation": "Operators", "count": 14}, {"designation": "Supervisors", "count": 22}],
+      "equipment": [{"type": "Mobile cranes", "count": 3}, {"type": "Scissor lifts", "count": 12}, {"type": "Excavators", "count": 2}, {"type": "Generators", "count": 4}, {"type": "Telehandlers", "count": 3}],
+      "total_manhours": 1324800,
+      "milestones": [{"name": "Main structure", "status": "complete"}, {"name": "Building watertight", "status": "due 2026-10-10"}, {"name": "MEP first fix", "status": "due 2027-01-31"}, {"name": "Commissioning", "status": "due 2027-05-15"}, {"name": "Handover", "status": "due 2027-06-30"}],
+      "sources": ["Monthly Progress Report MPR-18, rev 0", "Baseline Programme BP-02, approved", "Company Directory snapshot 2026-07-15"]
+    },
+    {
+      "code": "PRJ-2022-009",
+      "name": "Creek Logistics Centre",
+      "status": "completed",
+      "client": "Gulf Freight Partners",
+      "location": "Dubai South, UAE",
+      "contract_value_usd": 47200000,
+      "planned_start": "2022-05-01",
+      "planned_finish": "2024-01-31",
+      "revised_finish": "2024-03-15",
+      "reporting_date": "2024-03-15",
+      "baseline_progress": 100.0,
+      "revised_progress": 100.0,
+      "actual_progress": 100.0,
+      "contacts": [
+        {"name": "Nadia Qureshi", "project_role": "Project Manager", "email": "nadia.q@example.com", "mobile": "+971-50-555-0301"},
+        {"name": "Ravi Menon", "project_role": "Project Engineer", "email": "ravi.m@example.com", "mobile": "+971-50-555-0302"}
+      ],
+      "activities": ["Defects liability monitoring"],
+      "manpower": [{"designation": "Facilities technicians", "count": 4}],
+      "equipment": [{"type": "Service vehicles", "count": 2}],
+      "total_manhours": 2194300,
+      "milestones": [{"name": "Practical completion", "status": "complete"}, {"name": "Final handover", "status": "complete"}],
+      "sources": ["Project Completion Report PCR-01", "As-built Handover Index, rev 2", "Final Account Certificate"]
+    },
+    {
+      "code": "BID-2027-003",
+      "name": "Green Metro Extension Package C",
+      "status": "future",
+      "client": "Metropolitan Transit Agency",
+      "location": "Dubai, UAE",
+      "contract_value_usd": 310000000,
+      "planned_start": "2027-04-01",
+      "planned_finish": "2030-12-31",
+      "revised_finish": null,
+      "reporting_date": "2026-07-15",
+      "baseline_progress": 0.0,
+      "revised_progress": 0.0,
+      "actual_progress": 0.0,
+      "contacts": [
+        {"name": "Khalid Mansoor", "project_role": "Bid Manager", "email": "khalid.m@example.com", "mobile": "+971-50-555-0401"},
+        {"name": "Elena Petrova", "project_role": "Planning Engineer", "email": "elena.p@example.com", "mobile": "+971-50-555-0402"}
+      ],
+      "activities": ["Tender design review", "Construction methodology", "Resource histogram preparation"],
+      "manpower": [{"designation": "Bid team", "count": 18}],
+      "equipment": [{"type": "TBM allowance", "count": 2}],
+      "total_manhours": 12800,
+      "milestones": [{"name": "Technical submission", "status": "due 2026-09-10"}, {"name": "Commercial submission", "status": "due 2026-09-17"}, {"name": "Notice of award", "status": "forecast 2027-01-20"}],
+      "sources": ["Invitation to Tender ITT-C-01", "Tender Programme TP-03, working draft", "Bid Team Register 2026-07-15"]
+    }
+  ]
+}

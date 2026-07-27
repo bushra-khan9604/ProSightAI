@@ -1,0 +1,2 @@
+[console_scripts]
+prosight = prosight.cli:main
