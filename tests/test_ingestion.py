@@ -62,6 +62,21 @@ class IngestionTests(unittest.TestCase):
             repository.recover_interrupted_jobs()
             self.assertEqual("failed", repository.get_job(job["id"])["status"])
 
+    def test_failed_documents_are_hidden_but_jobs_remain_visible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ProjectRepository(Path(directory) / "test.db")
+            repository.initialize(DEFAULT_DATA)
+            document = repository.create_document(
+                "PRJ-2024-001", "broken.xlsx", "xlsx", "failed-checksum", "broken.xlsx"
+            )
+            job = repository.create_job(document["id"])
+            repository.update_document_status(document["id"], "failed")
+            repository.update_job(job["id"], "failed", 100, "Workbook is malformed")
+            self.assertEqual([], repository.list_documents("PRJ-2024-001"))
+            jobs = repository.list_jobs("PRJ-2024-001")
+            self.assertEqual("failed", jobs[0]["status"])
+            self.assertEqual("Workbook is malformed", jobs[0]["message"])
+
     def test_rag_search_is_project_scoped_and_document_can_be_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             store = RAGStore(Path(directory) / "vectors", embedder=self.fake_embeddings)

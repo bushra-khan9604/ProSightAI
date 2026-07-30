@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,11 +14,22 @@ from .excel import preview_mapped_workbook, preview_workbook
 from .mapping import OpenAIColumnMapper
 from .pdf import detect_reporting_date, extract_pdf_chunks
 
+logger = logging.getLogger("prosight.ingestion")
+
 
 class IngestionManager:
     """Validate uploads, persist them safely, and process them in background jobs."""
 
     LIMITS = {"pdf": 20 * 1024 * 1024, "xlsx": 10 * 1024 * 1024}
+
+    @staticmethod
+    def _failure_message(error: Exception) -> str:
+        """Return a useful browser-safe reason without leaking internal details."""
+        if isinstance(error, ValueError):
+            return str(error)[:500]
+        if isinstance(error, RuntimeError) and str(error).startswith("OPENAI_API_KEY"):
+            return "This workbook needs column mapping, but the mapping service is unavailable."
+        return "The file could not be processed. Check its format and contents, then try again."
 
     def __init__(
         self, repository: ProjectRepository, rag_store: RAGStore, upload_dir: str | Path,
@@ -106,8 +118,14 @@ class IngestionManager:
                     job_id, "awaiting_approval", 100, "Excel preview requires Admin approval", change["id"]
                 )
         except Exception as error:
+            logger.exception(
+                "ingestion_failed",
+                extra={"job_id": job_id, "document_id": document["id"], "kind": document["kind"]},
+            )
             self.repository.update_document_status(document["id"], "failed")
-            self.repository.update_job(job_id, "failed", 100, str(error)[:500])
+            self.repository.update_job(
+                job_id, "failed", 100, self._failure_message(error)
+            )
 
     def confirm_pdf_date(
         self, job_id: str, reporting_date: str, actor_role: str
@@ -144,8 +162,14 @@ class IngestionManager:
                 job_id, "ready", 100, f"Indexed {len(chunks)} chunks"
             )
         except Exception as error:
+            logger.exception(
+                "pdf_indexing_failed",
+                extra={"job_id": job_id, "document_id": document["id"], "kind": "pdf"},
+            )
             self.repository.update_document_status(document["id"], "failed")
-            self.repository.update_job(job_id, "failed", 100, str(error)[:500])
+            self.repository.update_job(
+                job_id, "failed", 100, self._failure_message(error)
+            )
 
     def delete_document(self, document_id: str, actor_role: str) -> dict:
         """Remove an indexed document after enforcing Admin authorization."""

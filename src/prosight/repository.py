@@ -85,11 +85,99 @@ class ProjectRepository:
                         after_json TEXT,
                         created_at TEXT NOT NULL
                     );
+                    CREATE TABLE IF NOT EXISTS notifications (
+                        id TEXT PRIMARY KEY,
+                        recipient_role TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        project_code TEXT NOT NULL,
+                        change_request_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        message TEXT NOT NULL,
+                        read_at TEXT,
+                        created_at TEXT NOT NULL,
+                        UNIQUE(recipient_role, event_type, change_request_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_notifications_role_created
+                        ON notifications(recipient_role, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_change_requests_status_created
+                        ON change_requests(status, created_at DESC);
+                    CREATE TABLE IF NOT EXISTS portfolio_imports (
+                        id TEXT PRIMARY KEY,
+                        filename TEXT NOT NULL,
+                        checksum TEXT NOT NULL,
+                        stored_path TEXT NOT NULL,
+                        uploaded_by TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        summary_json TEXT,
+                        error_message TEXT,
+                        created_at TEXT NOT NULL,
+                        completed_at TEXT
+                    );
+                    CREATE TABLE IF NOT EXISTS portfolio_import_jobs (
+                        id TEXT PRIMARY KEY,
+                        import_id TEXT NOT NULL UNIQUE,
+                        status TEXT NOT NULL,
+                        progress INTEGER NOT NULL,
+                        message TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS manpower_assignments (
+                        emp_code TEXT PRIMARY KEY,
+                        current_project_code TEXT NOT NULL,
+                        mobilized_project_code TEXT,
+                        name TEXT NOT NULL,
+                        designation TEXT,
+                        department TEXT,
+                        category TEXT,
+                        current_location TEXT,
+                        allocation TEXT,
+                        status TEXT,
+                        leave_balance REAL,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        import_id TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS project_invoices (
+                        job_number TEXT NOT NULL,
+                        draft_invoice_number TEXT NOT NULL,
+                        project_code TEXT NOT NULL,
+                        levels TEXT,
+                        status TEXT,
+                        approval_status TEXT,
+                        payment_status TEXT,
+                        risk_profile TEXT,
+                        invoice_value_usd REAL NOT NULL,
+                        invoice_value_aed REAL,
+                        submission_date TEXT,
+                        expected_remittance_date TEXT,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        import_id TEXT NOT NULL,
+                        PRIMARY KEY(job_number, draft_invoice_number)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_manpower_project
+                        ON manpower_assignments(current_project_code);
+                    CREATE INDEX IF NOT EXISTS idx_invoices_project
+                        ON project_invoices(project_code);
                     """
                 )
                 self._ensure_column(db, "documents", "reporting_date", "TEXT")
                 self._ensure_column(db, "documents", "effective_date", "TEXT")
                 self._ensure_column(db, "documents", "date_status", "TEXT NOT NULL DEFAULT 'pending'")
+                # Existing pending requests predate notifications but must still
+                # appear as unread Admin work after this additive migration.
+                pending = db.execute(
+                    """SELECT id, action, project_code, requested_by
+                       FROM change_requests WHERE status='pending'"""
+                ).fetchall()
+                for change in pending:
+                    self._insert_notification(
+                        db, "admin", "approval_required", change["project_code"],
+                        change["id"], "Approval required",
+                        f"{change['requested_by'].replace('_', ' ').title()} submitted a "
+                        f"{change['action'].replace('_', ' ')} request.",
+                    )
 
     @staticmethod
     def _ensure_column(
@@ -174,7 +262,21 @@ class ProjectRepository:
             rows = db.execute(
                 """SELECT id, project_code, filename, kind, checksum, status, created_at,
                           reporting_date, effective_date, date_status
-                   FROM documents WHERE project_code = ? ORDER BY created_at DESC""",
+                   FROM documents WHERE project_code = ? AND status <> 'failed'
+                   ORDER BY created_at DESC""",
+                (project_code,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_jobs(self, project_code: str) -> list[dict[str, Any]]:
+        """List persisted ingestion jobs for one project without stored file paths."""
+        self._ensure()
+        with closing(self.connect()) as db:
+            rows = db.execute(
+                """SELECT j.*, d.reporting_date AS detected_reporting_date,
+                          d.effective_date, d.date_status, d.kind, d.filename
+                   FROM ingestion_jobs j JOIN documents d ON d.id=j.document_id
+                   WHERE d.project_code=? ORDER BY j.created_at DESC""",
                 (project_code,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -275,7 +377,418 @@ class ProjectRepository:
                         requested_by, None, self._now(), None,
                     ),
                 )
+                self._insert_notification(
+                    db, "admin", "approval_required", project_code, change_id,
+                    "Approval required",
+                    f"{requested_by.replace('_', ' ').title()} submitted a {action.replace('_', ' ')} request.",
+                )
         return self.get_change_request(change_id)
+
+    def _insert_notification(
+        self, db: sqlite3.Connection, recipient_role: str, event_type: str,
+        project_code: str, change_request_id: str, title: str, message: str
+    ) -> None:
+        """Insert one idempotent role notification inside the caller's transaction."""
+        db.execute(
+            """INSERT OR IGNORE INTO notifications
+               (id,recipient_role,event_type,project_code,change_request_id,
+                title,message,read_at,created_at)
+               VALUES (?,?,?,?,?,?,?,NULL,?)""",
+            (
+                str(uuid.uuid4()), recipient_role, event_type, project_code,
+                change_request_id, title, message, self._now(),
+            ),
+        )
+
+    def list_notifications(self, role: str, unread_only: bool = False) -> dict[str, Any]:
+        """Return persistent notifications and the role's current unread count."""
+        self._ensure()
+        clause = "AND read_at IS NULL" if unread_only else ""
+        with closing(self.connect()) as db:
+            rows = db.execute(
+                f"""SELECT * FROM notifications WHERE recipient_role=? {clause}
+                    ORDER BY created_at DESC""",
+                (role,),
+            ).fetchall()
+            unread_count = db.execute(
+                """SELECT COUNT(*) AS count FROM notifications
+                   WHERE recipient_role=? AND read_at IS NULL""",
+                (role,),
+            ).fetchone()["count"]
+        return {"items": [dict(row) for row in rows], "unread_count": unread_count}
+
+    def mark_notification_read(self, notification_id: str, role: str) -> dict[str, Any]:
+        """Mark a notification read only when it belongs to the supplied role."""
+        self._ensure()
+        with closing(self.connect()) as db:
+            with db:
+                cursor = db.execute(
+                    """UPDATE notifications SET read_at=COALESCE(read_at, ?)
+                       WHERE id=? AND recipient_role=?""",
+                    (self._now(), notification_id, role),
+                )
+                if not cursor.rowcount:
+                    raise KeyError("Notification not found")
+                row = db.execute(
+                    "SELECT * FROM notifications WHERE id=?", (notification_id,)
+                ).fetchone()
+        return dict(row)
+
+    def mark_all_notifications_read(self, role: str) -> int:
+        """Mark every unread notification for one role as read."""
+        self._ensure()
+        with closing(self.connect()) as db:
+            with db:
+                cursor = db.execute(
+                    """UPDATE notifications SET read_at=?
+                       WHERE recipient_role=? AND read_at IS NULL""",
+                    (self._now(), role),
+                )
+        return cursor.rowcount
+
+    def list_pending_approvals(self) -> list[dict[str, Any]]:
+        """Return every pending change request for the server-backed Admin queue."""
+        self._ensure()
+        with closing(self.connect()) as db:
+            rows = db.execute(
+                """SELECT * FROM change_requests WHERE status='pending'
+                   ORDER BY created_at DESC"""
+            ).fetchall()
+        approvals = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item["payload"])
+            item["preview"] = json.loads(item["preview"])
+            approvals.append(item)
+        return approvals
+
+    def resolve_project_reference(self, value: str) -> str | None:
+        """Resolve a workbook project code, full name, or unique short name."""
+        self._ensure()
+        normalized = " ".join(value.strip().casefold().split())
+        if not normalized:
+            return None
+        with closing(self.connect()) as db:
+            rows = db.execute("SELECT code,name FROM projects").fetchall()
+        exact = [
+            row["code"] for row in rows
+            if normalized in {row["code"].casefold(), row["name"].casefold()}
+        ]
+        if len(exact) == 1:
+            return exact[0]
+        partial = [
+            row["code"] for row in rows
+            if normalized in row["name"].casefold() or row["name"].casefold() in normalized
+        ]
+        return partial[0] if len(partial) == 1 else None
+
+    def create_portfolio_import(
+        self, filename: str, checksum: str, stored_path: str, uploaded_by: str
+    ) -> dict[str, Any]:
+        """Create durable import and job records before workbook validation."""
+        self._ensure()
+        import_id, job_id, now = str(uuid.uuid4()), str(uuid.uuid4()), self._now()
+        with closing(self.connect()) as db:
+            with db:
+                db.execute(
+                    """INSERT INTO portfolio_imports
+                       VALUES (?,?,?,?,?,'processing',NULL,NULL,?,NULL)""",
+                    (import_id, filename, checksum, stored_path, uploaded_by, now),
+                )
+                db.execute(
+                    """INSERT INTO portfolio_import_jobs
+                       VALUES (?,?,'processing',10,'Validating workbook',?,?)""",
+                    (job_id, import_id, now, now),
+                )
+        return self.get_portfolio_import(import_id)
+
+    def fail_portfolio_import(self, import_id: str, message: str) -> dict[str, Any]:
+        """Persist a safe validation failure and notify the uploading role."""
+        record = self.get_portfolio_import(import_id, include_path=True)
+        if not record:
+            raise KeyError("Portfolio import not found")
+        now = self._now()
+        with closing(self.connect()) as db:
+            with db:
+                db.execute(
+                    """UPDATE portfolio_imports SET status='failed',error_message=?,
+                       completed_at=? WHERE id=?""",
+                    (message[:1000], now, import_id),
+                )
+                db.execute(
+                    """UPDATE portfolio_import_jobs SET status='failed',progress=100,
+                       message=?,updated_at=? WHERE import_id=?""",
+                    (message[:500], now, import_id),
+                )
+                self._insert_notification(
+                    db, record["uploaded_by"], "portfolio_import_failed", "PORTFOLIO",
+                    import_id, "Portfolio import failed", message[:500],
+                )
+        return self.get_portfolio_import(import_id)
+
+    def apply_portfolio_import(
+        self, import_id: str, parsed: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Atomically upsert validated manpower and invoice rows with audit."""
+        record = self.get_portfolio_import(import_id, include_path=True)
+        if not record:
+            raise KeyError("Portfolio import not found")
+        now, inserted_manpower, updated_manpower = self._now(), 0, 0
+        inserted_invoices, updated_invoices = 0, 0
+        with closing(self.connect()) as db:
+            with db:
+                for item in parsed["manpower"]:
+                    before_row = db.execute(
+                        "SELECT data_json FROM manpower_assignments WHERE emp_code=?",
+                        (item["emp_code"],),
+                    ).fetchone()
+                    before = json.loads(before_row["data_json"]) if before_row else None
+                    if before_row:
+                        updated_manpower += 1
+                    else:
+                        inserted_manpower += 1
+                    db.execute(
+                        """INSERT INTO manpower_assignments
+                           (emp_code,current_project_code,mobilized_project_code,name,
+                            designation,department,category,current_location,allocation,
+                            status,leave_balance,data_json,updated_at,import_id)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(emp_code) DO UPDATE SET
+                            current_project_code=excluded.current_project_code,
+                            mobilized_project_code=excluded.mobilized_project_code,
+                            name=excluded.name,designation=excluded.designation,
+                            department=excluded.department,category=excluded.category,
+                            current_location=excluded.current_location,
+                            allocation=excluded.allocation,status=excluded.status,
+                            leave_balance=excluded.leave_balance,data_json=excluded.data_json,
+                            updated_at=excluded.updated_at,import_id=excluded.import_id""",
+                        (
+                            item["emp_code"], item["current_project_code"],
+                            item["mobilized_project_code"], item["name"], item["designation"],
+                            item["department"], item["category"], item["current_location"],
+                            item["allocation"], item["status"], item["leave_balance"],
+                            json.dumps(item), now, import_id,
+                        ),
+                    )
+                    self._insert_audit(
+                        db, record["uploaded_by"], "portfolio_manpower_upsert",
+                        "manpower_assignment", item["emp_code"], before, item, now,
+                    )
+                for item in parsed["invoices"]:
+                    before_row = db.execute(
+                        """SELECT project_code,data_json FROM project_invoices
+                           WHERE job_number=? AND draft_invoice_number=?""",
+                        (item["job_number"], item["draft_invoice_number"]),
+                    ).fetchone()
+                    if before_row and before_row["project_code"] != item["project_code"]:
+                        raise ValueError("An existing invoice cannot be reassigned to another project")
+                    before = json.loads(before_row["data_json"]) if before_row else None
+                    if before_row:
+                        updated_invoices += 1
+                    else:
+                        inserted_invoices += 1
+                    db.execute(
+                        """INSERT INTO project_invoices
+                           (job_number,draft_invoice_number,project_code,levels,status,
+                            approval_status,payment_status,risk_profile,invoice_value_usd,
+                            invoice_value_aed,submission_date,expected_remittance_date,
+                            data_json,updated_at,import_id)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(job_number,draft_invoice_number) DO UPDATE SET
+                            levels=excluded.levels,status=excluded.status,
+                            approval_status=excluded.approval_status,
+                            payment_status=excluded.payment_status,
+                            risk_profile=excluded.risk_profile,
+                            invoice_value_usd=excluded.invoice_value_usd,
+                            invoice_value_aed=excluded.invoice_value_aed,
+                            submission_date=excluded.submission_date,
+                            expected_remittance_date=excluded.expected_remittance_date,
+                            data_json=excluded.data_json,updated_at=excluded.updated_at,
+                            import_id=excluded.import_id""",
+                        (
+                            item["job_number"], item["draft_invoice_number"],
+                            item["project_code"], item.get("levels"), item.get("status"),
+                            item.get("approval_status"), item.get("payment_status"),
+                            item.get("risk_profile"), item["invoice_value_usd"],
+                            item.get("invoice_value_aed"), item.get("submission_date"),
+                            item.get("expected_remittance_date"), json.dumps(item),
+                            now, import_id,
+                        ),
+                    )
+                    target = f"{item['job_number']}:{item['draft_invoice_number']}"
+                    self._insert_audit(
+                        db, record["uploaded_by"], "portfolio_invoice_upsert",
+                        "project_invoice", target, before, item, now,
+                    )
+                summary = {
+                    "manpower": {"inserted": inserted_manpower, "updated": updated_manpower},
+                    "invoices": {"inserted": inserted_invoices, "updated": updated_invoices},
+                    "pivot_row_count": db.execute(
+                        """SELECT COUNT(*) AS count FROM (
+                           SELECT levels,status FROM project_invoices
+                           GROUP BY levels,status)"""
+                    ).fetchone()["count"],
+                }
+                db.execute(
+                    """UPDATE portfolio_imports SET status='completed',summary_json=?,
+                       completed_at=? WHERE id=?""",
+                    (json.dumps(summary), now, import_id),
+                )
+                db.execute(
+                    """UPDATE portfolio_import_jobs SET status='completed',progress=100,
+                       message='Portfolio import completed',updated_at=? WHERE import_id=?""",
+                    (now, import_id),
+                )
+                self._insert_notification(
+                    db, record["uploaded_by"], "portfolio_import_completed", "PORTFOLIO",
+                    import_id, "Portfolio import completed",
+                    f"Imported {len(parsed['manpower'])} manpower and "
+                    f"{len(parsed['invoices'])} invoice rows.",
+                )
+        return self.get_portfolio_import(import_id)
+
+    @staticmethod
+    def _insert_audit(
+        db: sqlite3.Connection, actor_role: str, action: str, target_type: str,
+        target_id: str, before: Any, after: Any, created_at: str,
+    ) -> None:
+        db.execute(
+            "INSERT INTO audit_events VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()), None, actor_role, action, target_type, target_id,
+                json.dumps(before), json.dumps(after), created_at,
+            ),
+        )
+
+    def get_portfolio_import(
+        self, import_id: str, include_path: bool = False
+    ) -> dict[str, Any] | None:
+        """Return one portfolio import and its durable job status."""
+        self._ensure()
+        with closing(self.connect()) as db:
+            row = db.execute(
+                """SELECT i.*,j.id AS job_id,j.progress,j.message,j.updated_at
+                   FROM portfolio_imports i JOIN portfolio_import_jobs j ON j.import_id=i.id
+                   WHERE i.id=?""",
+                (import_id,),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        if not include_path:
+            result.pop("stored_path", None)
+        result["summary"] = json.loads(result.pop("summary_json")) if result["summary_json"] else None
+        return result
+
+    def list_manpower(
+        self, project_code: str | None = None, search: str | None = None,
+        department: str | None = None, category: str | None = None,
+        status: str | None = None, location: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query current manpower assignments by project and optional text."""
+        self._ensure()
+        query, params = "SELECT data_json FROM manpower_assignments WHERE 1=1", []
+        if project_code:
+            query += " AND current_project_code=?"
+            params.append(project_code)
+        if search:
+            query += " AND (name LIKE ? OR emp_code LIKE ? OR department LIKE ? OR category LIKE ?)"
+            params.extend([f"%{search}%"] * 4)
+        for column, value in (
+            ("department", department), ("category", category),
+            ("status", status), ("current_location", location),
+        ):
+            if value:
+                query += f" AND {column}=?"
+                params.append(value)
+        query += " ORDER BY name"
+        with closing(self.connect()) as db:
+            rows = db.execute(query, params).fetchall()
+        return [json.loads(row["data_json"]) for row in rows]
+
+    def list_invoices(
+        self, project_code: str | None = None, status: str | None = None,
+        level: str | None = None, approval_status: str | None = None,
+        payment_status: str | None = None, risk_profile: str | None = None,
+        date_from: str | None = None, date_to: str | None = None,
+        minimum_aging_days: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query invoice rows and add live aging values where dates permit."""
+        self._ensure()
+        query, params = "SELECT data_json FROM project_invoices WHERE 1=1", []
+        if project_code:
+            query += " AND project_code=?"
+            params.append(project_code)
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        for column, value in (
+            ("levels", level), ("approval_status", approval_status),
+            ("payment_status", payment_status), ("risk_profile", risk_profile),
+        ):
+            if value:
+                query += f" AND {column}=?"
+                params.append(value)
+        if date_from:
+            query += " AND submission_date>=?"
+            params.append(date_from)
+        if date_to:
+            query += " AND submission_date<=?"
+            params.append(date_to)
+        with closing(self.connect()) as db:
+            rows = db.execute(query, params).fetchall()
+        today, results = date.today(), []
+        for row in rows:
+            item = json.loads(row["data_json"])
+            item["live_aging_days"] = self._days_since(item.get("submission_date"), today)
+            item["live_days_to_remittance"] = self._days_until(
+                item.get("expected_remittance_date"), today
+            )
+            if minimum_aging_days is None or (
+                item["live_aging_days"] is not None
+                and item["live_aging_days"] >= minimum_aging_days
+            ):
+                results.append(item)
+        return results
+
+    def invoice_pivot(self) -> list[dict[str, Any]]:
+        """Aggregate the authoritative invoice pivot directly in SQLite."""
+        self._ensure()
+        with closing(self.connect()) as db:
+            rows = db.execute(
+                """SELECT COALESCE(levels,'') AS levels,COALESCE(status,'') AS status,
+                          project_code,ROUND(SUM(invoice_value_usd),2) AS total
+                   FROM project_invoices
+                   GROUP BY levels,status,project_code
+                   ORDER BY levels,status,project_code"""
+            ).fetchall()
+        grouped: dict[tuple[str, str], dict[str, float]] = {}
+        for row in rows:
+            key = (row["levels"], row["status"])
+            grouped.setdefault(key, {})[row["project_code"]] = row["total"]
+        return [
+            {
+                "levels": levels,
+                "status": status,
+                "projects": projects,
+                "grand_total": round(sum(projects.values()), 2),
+            }
+            for (levels, status), projects in grouped.items()
+        ]
+
+    @staticmethod
+    def _days_since(value: str | None, today: date) -> int | None:
+        try:
+            return max(0, (today - date.fromisoformat(value or "")).days)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _days_until(value: str | None, today: date) -> int | None:
+        try:
+            return (date.fromisoformat(value or "") - today).days
+        except ValueError:
+            return None
 
     def update_pending_project_change(
         self, change_id: str, project: dict[str, Any], actor_role: str
@@ -306,6 +819,44 @@ class ProjectRepository:
                     (merged["code"], json.dumps(payload), json.dumps(preview), change_id),
                 )
         return self.get_change_request(change_id)
+
+    def update_project(
+        self, project_code: str, updates: dict[str, Any], actor_role: str
+    ) -> dict[str, Any]:
+        """Update one existing project immediately and preserve an audit trail."""
+        if actor_role not in {"project_manager", "planning_engineer", "admin"}:
+            raise PermissionError("This role cannot update projects")
+        self._ensure()
+        with closing(self.connect()) as db:
+            with db:
+                row = db.execute(
+                    "SELECT payload FROM projects WHERE code = ?", (project_code,)
+                ).fetchone()
+                if not row:
+                    raise KeyError("Project not found")
+                before = json.loads(row["payload"])
+                after = {**before, **updates, "code": project_code}
+                values = {**after, "payload": json.dumps(after)}
+                db.execute(
+                    """UPDATE projects SET name=:name,status=:status,client=:client,
+                    location=:location,contract_value_usd=:contract_value_usd,
+                    planned_start=:planned_start,planned_finish=:planned_finish,
+                    revised_finish=:revised_finish,reporting_date=:reporting_date,
+                    baseline_progress=:baseline_progress,revised_progress=:revised_progress,
+                    actual_progress=:actual_progress,payload=:payload WHERE code=:code""",
+                    values,
+                )
+                db.execute(
+                    "INSERT INTO audit_events VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(uuid.uuid4()), None, actor_role, "project_update", "project",
+                        project_code, json.dumps(before), json.dumps(after), self._now(),
+                    ),
+                )
+        project = self.find_project(project_code, actor_role)
+        if not project:
+            raise KeyError("Project not found")
+        return project
 
     def get_change_request(self, change_id: str) -> dict[str, Any] | None:
         """Return a pending or decided mutation with decoded JSON."""
@@ -357,6 +908,20 @@ class ProjectRepository:
                         json.dumps(change["preview"].get("after")), self._now(),
                     ),
                 )
+                db.execute(
+                    """UPDATE notifications SET read_at=COALESCE(read_at, ?)
+                       WHERE recipient_role='admin' AND event_type='approval_required'
+                       AND change_request_id=?""",
+                    (self._now(), change_id),
+                )
+                result_event = "change_approved" if decision == "approved" else "change_rejected"
+                if change["requested_by"] != "admin":
+                    self._insert_notification(
+                        db, change["requested_by"], result_event, change["project_code"],
+                        change_id,
+                        "Change approved" if decision == "approved" else "Change rejected",
+                        f"Your {change['action'].replace('_', ' ')} request was {decision}.",
+                    )
         return self.get_change_request(change_id)
 
     def _apply_change(self, db: sqlite3.Connection, change: dict[str, Any]) -> None:

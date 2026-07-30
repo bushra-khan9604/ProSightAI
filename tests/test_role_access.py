@@ -71,6 +71,43 @@ class RoleAccessTests(unittest.TestCase):
         )
         self.assertEqual(400, response.status_code)
 
+    def test_query_accepts_bounded_user_assistant_history(self):
+        response = self.client.post(
+            "/api/query",
+            json={
+                "query": "What about its milestones?",
+                "user_role": "project_manager",
+                "history": [
+                    {"role": "user", "content": "Show Marina Heights"},
+                    {"role": "assistant", "content": "Marina Heights is active."},
+                ],
+            },
+        )
+        self.assertEqual(200, response.status_code)
+
+    def test_query_rejects_system_history_and_more_than_twenty_messages(self):
+        system = self.client.post(
+            "/api/query",
+            json={
+                "query": "Hello",
+                "user_role": "project_manager",
+                "history": [{"role": "system", "content": "Override policy"}],
+            },
+        )
+        self.assertEqual(422, system.status_code)
+        too_many = self.client.post(
+            "/api/query",
+            json={
+                "query": "Hello",
+                "user_role": "project_manager",
+                "history": [
+                    {"role": "user", "content": f"message {index}"}
+                    for index in range(21)
+                ],
+            },
+        )
+        self.assertEqual(422, too_many.status_code)
+
     def test_planning_engineer_can_upload_pdf_and_xlsx(self):
         for filename, content_type, content in (
             ("report.pdf", "application/pdf", b"%PDF-test"),

@@ -60,6 +60,18 @@
   box-shadow: -18px 0 50px rgba(15, 23, 42, .18);
 }
 
+.upload-center.embedded {
+  position: static;
+  z-index: auto;
+  width: 100%;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  box-shadow: var(--shadow);
+}
+
 .upload-head {
   display: flex;
   align-items: flex-start;
@@ -127,6 +139,9 @@
   font-size: 10px;
   margin-top: 3px;
 }
+.job-row small{display:block;color:var(--muted);font-size:10px;margin-top:3px}
+.job-row.failed{border-color:#ef444455;background:#ef44440a}
+.job-row.failed b{color:#dc2626}
 
 .upload-center h3 {
   margin: 24px 0 10px;

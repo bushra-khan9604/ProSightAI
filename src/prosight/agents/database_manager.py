@@ -23,6 +23,37 @@ class DatabaseManagerAgent:
         repository operation and returns the stored project payload as typed
         evidence for the Writer Agent.
         """
+        normalized = query.casefold()
+        if any(term in normalized for term in ("invoice", "payment", "remittance", "aging", "risk profile")):
+            invoices = self.repository.list_invoices(project_code)
+            if "pivot" in normalized:
+                invoices = self.repository.invoice_pivot()
+            return DatabaseEvidence(
+                records=invoices,
+                evidence=[
+                    EvidenceItem(
+                        text=f"Authorized portfolio invoice record: {item}",
+                        citation="Portfolio invoice register",
+                        metadata={"project_code": project_code, "source_type": "database"},
+                    )
+                    for item in invoices[:50]
+                ],
+                summary=f"Found {len(invoices)} portfolio invoice records",
+            )
+        if any(term in normalized for term in ("manpower", "workforce", "employee", "allocation")):
+            manpower = self.repository.list_manpower(project_code)
+            return DatabaseEvidence(
+                records=manpower,
+                evidence=[
+                    EvidenceItem(
+                        text=f"Authorized manpower assignment: {item}",
+                        citation="Portfolio manpower register",
+                        metadata={"project_code": item.get("current_project_code"), "source_type": "database"},
+                    )
+                    for item in manpower[:100]
+                ],
+                summary=f"Found {len(manpower)} manpower assignments",
+            )
         if project_code:
             project = self.repository.find_project(project_code, role)
             if not project:

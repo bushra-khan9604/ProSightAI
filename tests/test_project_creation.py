@@ -1,7 +1,9 @@
 """API tests for reviewed new-project creation."""
 
+import json
 import tempfile
 import unittest
+from contextlib import closing
 from io import BytesIO
 from pathlib import Path
 
@@ -69,6 +71,73 @@ class ProjectCreationTests(unittest.TestCase):
             "/api/projects/change-preview?role=planning_engineer", json=self.draft
         )
         self.assertEqual(403, response.status_code)
+
+    def test_project_manager_can_update_existing_project_immediately(self):
+        existing = self.repository.list_projects(user_role="admin")[0]
+        payload = {
+            field: existing[field]
+            for field in (
+                "name", "status", "client", "location", "contract_value_usd",
+                "planned_start", "planned_finish", "revised_finish", "reporting_date",
+                "baseline_progress", "revised_progress", "actual_progress",
+            )
+        }
+        payload["name"] = "Updated project name"
+        response = self.client.patch(
+            f"/api/projects/{existing['code']}?role=project_manager", json=payload
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("Updated project name", response.json()["name"])
+        with closing(self.repository.connect()) as db:
+            audit = db.execute(
+                """SELECT * FROM audit_events WHERE action='project_update'
+                   AND target_id=?""",
+                (existing["code"],),
+            ).fetchone()
+        self.assertIsNotNone(audit)
+        self.assertEqual(existing["name"], json.loads(audit["before_json"])["name"])
+        self.assertEqual("Updated project name", json.loads(audit["after_json"])["name"])
+
+    def test_planning_engineer_can_update_but_cannot_change_code(self):
+        existing = self.repository.list_projects(user_role="admin")[0]
+        payload = {
+            field: existing[field]
+            for field in (
+                "name", "status", "client", "location", "contract_value_usd",
+                "planned_start", "planned_finish", "revised_finish", "reporting_date",
+                "baseline_progress", "revised_progress", "actual_progress",
+            )
+        }
+        payload["actual_progress"] = 42
+        response = self.client.patch(
+            f"/api/projects/{existing['code']}?role=planning_engineer", json=payload
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(42, response.json()["actual_progress"])
+        payload["code"] = "CHANGED-CODE"
+        rejected = self.client.patch(
+            f"/api/projects/{existing['code']}?role=planning_engineer", json=payload
+        )
+        self.assertEqual(422, rejected.status_code)
+        self.assertIsNone(self.repository.find_project("CHANGED-CODE", "admin"))
+
+    def test_project_update_rejects_invalid_schedule_without_mutation(self):
+        existing = self.repository.list_projects(user_role="admin")[0]
+        payload = {
+            field: existing[field]
+            for field in (
+                "name", "status", "client", "location", "contract_value_usd",
+                "planned_start", "planned_finish", "revised_finish", "reporting_date",
+                "baseline_progress", "revised_progress", "actual_progress",
+            )
+        }
+        payload["planned_finish"] = "2000-01-01"
+        response = self.client.patch(
+            f"/api/projects/{existing['code']}?role=admin", json=payload
+        )
+        self.assertEqual(422, response.status_code)
+        unchanged = self.repository.find_project(existing["code"], "admin")
+        self.assertEqual(existing["planned_finish"], unchanged["planned_finish"])
 
     def test_canonical_workbook_autofills_editable_project_preview(self):
         workbook = Workbook()

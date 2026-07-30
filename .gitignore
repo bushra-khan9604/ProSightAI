@@ -7,8 +7,7 @@ frontend/node_modules/
 frontend/dist/
 .pnpm-store/
 logs/
-data/uploads/
-data/vector_store/
+data/
 tmp/
 output/
 outputs/

@@ -12,7 +12,7 @@ from ..observability import RequestTrace
 from ..repository import ProjectRepository
 from .database_manager import DatabaseManagerAgent
 from .rag_agent import RAGAgent
-from .writer import WRITER_INSTRUCTIONS, WriterAgent
+from .writer import WRITER_INSTRUCTIONS, WriterAgent, create_table as format_table
 
 
 ORCHESTRATOR_INSTRUCTIONS = """You are the ProSight Main Orchestrator Agent.
@@ -42,7 +42,8 @@ class MultiAgentOrchestrator:
         rag_terms = ("document", "pdf", "report", "specification", "drawing", "clause")
         database_terms = (
             "project", "progress", "contact", "manpower", "equipment", "milestone",
-            "contract", "schedule", "database",
+            "contract", "schedule", "database", "invoice", "payment", "remittance",
+            "aging", "risk profile", "workforce", "employee", "allocation",
         )
         if normalized.strip() in {"hi", "hello", "hey"}:
             intent, agents = "greeting", ["writer"]
@@ -66,7 +67,12 @@ class MultiAgentOrchestrator:
         )
 
     def run(
-        self, query: str, role: str, project_code: str | None, trace: RequestTrace
+        self,
+        query: str,
+        role: str,
+        project_code: str | None,
+        trace: RequestTrace,
+        history: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Execute with OpenAI when configured, or deterministic local test routing."""
         plan = self.plan(query, project_code)
@@ -75,7 +81,9 @@ class MultiAgentOrchestrator:
         if settings.ai_provider == "local" or not settings.openai_api_key:
             return self._run_local(query, role, project_code, plan, trace).model_dump()
         try:
-            return self._run_openai(query, role, project_code, plan, trace).model_dump()
+            return self._run_openai(
+                query, role, project_code, plan, trace, history or []
+            ).model_dump()
         except Exception as exc:
             trace.event("fallback_activated", status="warning", error=type(exc).__name__)
             answer = self._run_local(query, role, project_code, plan, trace)
@@ -118,6 +126,7 @@ class MultiAgentOrchestrator:
         project_code: str | None,
         plan: OrchestrationPlan,
         trace: RequestTrace,
+        history: list[dict[str, str]],
     ) -> AgentAnswer:
         """Use the OpenAI Agents SDK while keeping specialist data access isolated."""
         from agents import Agent, Runner, function_tool
@@ -144,10 +153,21 @@ class MultiAgentOrchestrator:
                         result_size=len(evidence.evidence))
             return evidence.model_dump_json()
 
+        @function_tool
+        def create_table(
+            columns: list[str],
+            rows: list[list[str]],
+            title: str = "",
+            omitted_count: int = 0,
+        ) -> str:
+            """Create a safe Markdown table solely from evidence supplied to the Writer."""
+            return format_table(columns, rows, title, omitted_count)
+
         writer_agent = Agent(
             name="Writer Agent",
             instructions=WRITER_INSTRUCTIONS,
             model=get_settings().openai_model,
+            tools=[create_table],
         )
         manager = Agent(
             name=self.name,
@@ -160,7 +180,10 @@ class MultiAgentOrchestrator:
         )
         trace.event("provider_request_started", provider="openai",
                     model=get_settings().openai_model)
-        result = Runner.run_sync(manager, query)
+        result = Runner.run_sync(
+            manager,
+            [*history, {"role": "user", "content": query}],
+        )
         text = str(result.final_output)
         citations = list(dict.fromkeys(
             re.findall(r"[\w .()_-]+\.pdf, page \d+", text, flags=re.IGNORECASE)

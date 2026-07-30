@@ -23,7 +23,10 @@ class OpenAIColumnMapper:
         workbook = load_workbook(path, read_only=True, data_only=True, keep_links=False)
         samples = {}
         for sheet in workbook.worksheets:
-            rows = list(sheet.iter_rows(min_row=1, max_row=min(sheet.max_row, 6), values_only=True))
+            # Some valid workbooks omit cached worksheet dimensions, causing
+            # openpyxl read-only worksheets to expose max_row=None.
+            sample_limit = min(sheet.max_row or 6, 6)
+            rows = list(sheet.iter_rows(min_row=1, max_row=sample_limit, values_only=True))
             samples[sheet.title] = rows
         workbook.close()
         schema = {

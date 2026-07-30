@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import shutil
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .agents import MultiAgentOrchestrator
 from .agents.rag_agent import RAGAgent
 from .config import get_settings
 from .ingestion import IngestionManager
 from .ingestion.excel import preview_workbook
+from .ingestion.portfolio import create_portfolio_template, parse_portfolio_workbook
 from .observability import RequestTrace, configure_logging, sanitize
 from .rag import RAGStore
 from .repository import DEFAULT_DB, ProjectRepository
@@ -27,8 +31,17 @@ ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 UPLOAD_DIR = ROOT / "data" / "uploads"
 VECTOR_DIR = ROOT / "data" / "vector_store"
+PORTFOLIO_DIR = ROOT / "data" / "portfolio_imports"
 ROLES = {"project_manager", "planning_engineer", "admin"}
 CHANGE_PREVIEW_ROLES = {"project_manager", "admin"}
+PROJECT_UPDATE_ROLES = {"project_manager", "planning_engineer", "admin"}
+
+
+class ChatHistoryMessage(BaseModel):
+    """One user-visible message supplied as temporary conversation context."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=10_000)
 
 
 class QueryRequest(BaseModel):
@@ -37,6 +50,7 @@ class QueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=10_000)
     user_role: str = "project_manager"
     project_code: str | None = None
+    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
 
 
 class ProjectDraft(BaseModel):
@@ -55,6 +69,47 @@ class ProjectDraft(BaseModel):
     baseline_progress: float = Field(ge=0, le=100)
     revised_progress: float = Field(ge=0, le=100)
     actual_progress: float = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "ProjectDraft":
+        """Require ISO dates and coherent project schedule boundaries."""
+        try:
+            planned_start = date.fromisoformat(self.planned_start)
+            planned_finish = date.fromisoformat(self.planned_finish)
+            revised_finish = date.fromisoformat(self.revised_finish) if self.revised_finish else None
+            date.fromisoformat(self.reporting_date)
+        except ValueError as error:
+            raise ValueError("Project dates must use YYYY-MM-DD format") from error
+        if planned_finish < planned_start:
+            raise ValueError("Planned finish cannot be before planned start")
+        if revised_finish and revised_finish < planned_start:
+            raise ValueError("Revised finish cannot be before planned start")
+        return self
+
+
+class ProjectUpdate(BaseModel):
+    """Validated mutable fields for an existing project."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=3, max_length=200)
+    status: Literal["active", "completed", "future"]
+    client: str = Field(min_length=2, max_length=200)
+    location: str = Field(min_length=2, max_length=200)
+    contract_value_usd: float = Field(ge=0)
+    planned_start: str
+    planned_finish: str
+    revised_finish: str | None = None
+    reporting_date: str
+    baseline_progress: float = Field(ge=0, le=100)
+    revised_progress: float = Field(ge=0, le=100)
+    actual_progress: float = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "ProjectUpdate":
+        """Apply the same date invariants as new-project creation."""
+        ProjectDraft(code="VALIDATION", **self.model_dump())
+        return self
 
 
 class DocumentDateConfirmation(BaseModel):
@@ -193,6 +248,27 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         finally:
             temp_path.unlink(missing_ok=True)
 
+    @app.patch("/api/projects/{project_code}")
+    def update_project(
+        project_code: str,
+        update: ProjectUpdate,
+        role: str = Query(...),
+    ) -> dict:
+        """Immediately update mutable project fields and create an audit record."""
+        _validate_role(role)
+        _require_role(role, PROJECT_UPDATE_ROLES, "This role cannot update projects")
+        try:
+            return runtime.repository.update_project(
+                project_code,
+                {
+                    **update.model_dump(),
+                    "revised_finish": update.revised_finish or update.planned_finish,
+                },
+                role,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
     @app.patch("/api/change-requests/{change_id}")
     def update_change_request(
         change_id: str,
@@ -242,9 +318,14 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
                 role=payload.user_role,
                 project_code=payload.project_code,
                 query_length=len(payload.query),
+                history_count=len(payload.history),
             )
             result = runtime.orchestrator.run(
-                payload.query.strip(), payload.user_role, payload.project_code, trace
+                payload.query.strip(),
+                payload.user_role,
+                payload.project_code,
+                trace,
+                [message.model_dump() for message in payload.history],
             )
             result.update(request_id=trace.request_id, duration_ms=trace.duration_ms)
             trace.event(
@@ -341,6 +422,125 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         return runtime.repository.list_documents(project_code)
 
+    @app.get("/api/projects/{project_code}/ingestion-jobs")
+    def project_ingestion_jobs(
+        project_code: str, role: str = Query("project_manager")
+    ) -> list[dict]:
+        _validate_role(role)
+        if not runtime.repository.find_project(project_code, role):
+            raise HTTPException(status_code=404, detail="Project not found or unauthorized")
+        return runtime.repository.list_jobs(project_code)
+
+    @app.post("/api/portfolio-imports")
+    def portfolio_import(
+        role: str = Form(...), file: UploadFile = File(...)
+    ) -> dict:
+        _validate_role(role)
+        _require_role(
+            role, {"project_manager", "planning_engineer", "admin"},
+            "This role cannot import portfolio data",
+        )
+        filename = Path(file.filename or "").name
+        if Path(filename).suffix.lower() != ".xlsx":
+            raise HTTPException(status_code=400, detail="Portfolio imports must be XLSX files")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as temporary:
+            shutil.copyfileobj(file.file, temporary)
+            temp_path = Path(temporary.name)
+        try:
+            if temp_path.stat().st_size > 20 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="Portfolio workbook exceeds 20 MB")
+            content = temp_path.read_bytes()
+            if not content.startswith(b"PK"):
+                raise HTTPException(status_code=400, detail="File content is not a valid XLSX workbook")
+            checksum = hashlib.sha256(content).hexdigest()
+            PORTFOLIO_DIR.mkdir(parents=True, exist_ok=True)
+            destination = PORTFOLIO_DIR / f"{uuid.uuid4()}-{filename}"
+            shutil.copy2(temp_path, destination)
+            record = runtime.repository.create_portfolio_import(
+                filename, checksum, str(destination), role
+            )
+            try:
+                parsed = parse_portfolio_workbook(
+                    destination, runtime.repository.resolve_project_reference
+                )
+                return runtime.repository.apply_portfolio_import(record["id"], parsed)
+            except (ValueError, KeyError) as error:
+                failed = runtime.repository.fail_portfolio_import(record["id"], str(error))
+                raise HTTPException(
+                    status_code=400,
+                    detail={"message": str(error), "import": failed},
+                ) from error
+            except Exception as error:
+                logging.getLogger("prosight.portfolio").exception(
+                    "portfolio_import_failed", extra={"import_id": record["id"]}
+                )
+                message = "The portfolio workbook could not be processed. Check its format and try again."
+                failed = runtime.repository.fail_portfolio_import(record["id"], message)
+                raise HTTPException(
+                    status_code=500, detail={"message": message, "import": failed}
+                ) from error
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    @app.get("/api/portfolio-imports/template")
+    def portfolio_import_template(role: str = Query(...)) -> FileResponse:
+        _validate_role(role)
+        PORTFOLIO_DIR.mkdir(parents=True, exist_ok=True)
+        path = PORTFOLIO_DIR / "ProSight-Portfolio-Import-Template.xlsx"
+        create_portfolio_template(path)
+        return FileResponse(
+            path,
+            filename="ProSight-Portfolio-Import-Template.xlsx",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    @app.get("/api/portfolio-imports/{import_id}")
+    def portfolio_import_status(import_id: str, role: str = Query(...)) -> dict:
+        _validate_role(role)
+        record = runtime.repository.get_portfolio_import(import_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Portfolio import not found")
+        if role != "admin" and record["uploaded_by"] != role:
+            raise HTTPException(status_code=403, detail="Portfolio import is restricted")
+        return record
+
+    @app.get("/api/portfolio/manpower")
+    def portfolio_manpower(
+        role: str = Query(...), project_code: str | None = Query(None),
+        search: str | None = Query(None), department: str | None = Query(None),
+        category: str | None = Query(None), status: str | None = Query(None),
+        location: str | None = Query(None),
+    ) -> list[dict]:
+        _validate_role(role)
+        if project_code and not runtime.repository.find_project(project_code, role):
+            raise HTTPException(status_code=404, detail="Project not found or unauthorized")
+        return runtime.repository.list_manpower(
+            project_code, search, department, category, status, location
+        )
+
+    @app.get("/api/portfolio/invoices")
+    def portfolio_invoices(
+        role: str = Query(...), project_code: str | None = Query(None),
+        status: str | None = Query(None), level: str | None = Query(None),
+        approval_status: str | None = Query(None),
+        payment_status: str | None = Query(None),
+        risk_profile: str | None = Query(None),
+        date_from: str | None = Query(None), date_to: str | None = Query(None),
+        minimum_aging_days: int | None = Query(None, ge=0),
+    ) -> list[dict]:
+        _validate_role(role)
+        if project_code and not runtime.repository.find_project(project_code, role):
+            raise HTTPException(status_code=404, detail="Project not found or unauthorized")
+        return runtime.repository.list_invoices(
+            project_code, status, level, approval_status, payment_status,
+            risk_profile, date_from, date_to, minimum_aging_days,
+        )
+
+    @app.get("/api/portfolio/invoice-pivot")
+    def portfolio_invoice_pivot(role: str = Query(...)) -> list[dict]:
+        _validate_role(role)
+        return runtime.repository.invoice_pivot()
+
     @app.delete("/api/documents/{document_id}")
     def delete_document(document_id: str, role: str = Query(...)) -> dict:
         _validate_role(role)
@@ -361,6 +561,34 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         if not change:
             raise HTTPException(status_code=404, detail="Change request not found")
         return change
+
+    @app.get("/api/notifications")
+    def notifications(
+        role: str = Query(...), status: Literal["unread", "all"] = Query("all")
+    ) -> dict:
+        _validate_role(role)
+        return runtime.repository.list_notifications(role, status == "unread")
+
+    @app.post("/api/notifications/{notification_id}/read")
+    def read_notification(notification_id: str, role: str = Query(...)) -> dict:
+        _validate_role(role)
+        try:
+            return runtime.repository.mark_notification_read(notification_id, role)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.post("/api/notifications/read-all")
+    def read_all_notifications(role: str = Query(...)) -> dict:
+        _validate_role(role)
+        return {"updated": runtime.repository.mark_all_notifications_read(role)}
+
+    @app.get("/api/approvals")
+    def approvals(
+        role: str = Query(...), status: Literal["pending"] = Query("pending")
+    ) -> dict:
+        _validate_role(role)
+        _require_role(role, {"admin"}, "Only Admin can access the approval queue")
+        return {"items": runtime.repository.list_pending_approvals()}
 
     @app.post("/api/change-requests/{change_id}/{decision}")
     def decide_change(

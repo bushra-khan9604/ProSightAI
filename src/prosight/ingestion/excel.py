@@ -63,7 +63,7 @@ def preview_workbook(path: Path, project_code: str, max_rows: int = 10_000) -> d
     # omits the optional cached <dimension> element. Read-only mode can expose
     # ``max_row=None`` for such files and incorrectly reject them during upload.
     workbook = load_workbook(path, read_only=False, data_only=True, keep_links=False)
-    populated_rows = sum(max(sheet.max_row - 1, 0) for sheet in workbook.worksheets)
+    populated_rows = sum(max((sheet.max_row or 1) - 1, 0) for sheet in workbook.worksheets)
     if populated_rows > max_rows:
         workbook.close()
         raise ValueError(f"Workbook exceeds the {max_rows:,}-row limit")
