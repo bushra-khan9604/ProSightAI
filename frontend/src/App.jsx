@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import {
   Activity, Bell, BookOpen, Bot, BriefcaseBusiness, Building2,
   ChevronRight, CircleDollarSign, Clock3, LayoutDashboard, Menu,
-  FileSpreadsheet, FileText, Moon, Plus, RotateCcw, Send, Sun, Trash2,
-  Upload, Users, Wrench, X,
+  FileSpreadsheet, FileText, HardHat, Moon, Plus, ReceiptText, RotateCcw,
+  Send, Sparkles, Sun, Trash2, TrendingUp, Upload, Users, Wrench, X,
 } from "lucide-react";
 import {
   Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
@@ -79,9 +79,15 @@ function AssistantText({ content }) {
         <tbody>{block.rows.map((row,rowIndex)=><tr key={rowIndex}>{row.map((cell,column)=><td className={numeric[column]?"numeric":""} key={column}><InlineText content={cell}/></td>)}</tr>)}</tbody>
       </table></div>;
     }
-    return <div className="assistant-prose" key={index}>{block.lines.map((line,lineIndex)=>
-      line.startsWith("### ")?<h4 key={lineIndex}><InlineText content={line.slice(4)}/></h4>:
-      <span key={lineIndex}><InlineText content={line}/>{lineIndex<block.lines.length-1&&<br/>}</span>)}</div>;
+    return <div className="assistant-prose" key={index}>{block.lines.map((line,lineIndex)=>{
+      const trimmed=line.trim();
+      if(!trimmed)return <span className="assistant-space" key={lineIndex}/>;
+      if(trimmed.startsWith("### "))return <h4 key={lineIndex}><InlineText content={trimmed.slice(4)}/></h4>;
+      if(trimmed.startsWith("## "))return <h3 key={lineIndex}><InlineText content={trimmed.slice(3)}/></h3>;
+      if(/^[-*]\s/.test(trimmed))return <div className="assistant-bullet" key={lineIndex}><i/><p><InlineText content={trimmed.slice(2)}/></p></div>;
+      if(/^\d+\.\s/.test(trimmed))return <div className="assistant-number" key={lineIndex}><b>{trimmed.match(/^\d+/)[0]}</b><p><InlineText content={trimmed.replace(/^\d+\.\s/,"")}/></p></div>;
+      return <p key={lineIndex}><InlineText content={line}/></p>;
+    })}</div>;
   })}</div>;
 }
 
@@ -91,7 +97,7 @@ function Status({ project }) {
   return <span className={`status ${risk ? "risk" : "success"}`}>{risk ? "At risk" : "On track"}</span>;
 }
 
-function Sidebar({ page, setPage, collapsed, setCollapsed }) {
+function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, setRole, refreshProjects, onActivityCleared }) {
   return <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand">
       <div className="brand-mark"><img src="/prosight-logo.png" alt="ProSight AI logo"/></div>
@@ -103,15 +109,16 @@ function Sidebar({ page, setPage, collapsed, setCollapsed }) {
       </button>)}
     </nav>
     <div className="sidebar-foot">
-      <button className="collapse" onClick={() => setCollapsed(!collapsed)}>
+      <SidebarUtilities {...{dark,setDark,role,setRole,refreshProjects,onActivityCleared,collapsed}}/>
+      <button className="collapse" aria-label={collapsed?"Expand sidebar":"Collapse sidebar"} title={collapsed?"Expand sidebar":"Collapse sidebar"} onClick={() => setCollapsed(!collapsed)}>
         {collapsed ? <Menu size={18}/> : <X size={18}/>}
       </button>
     </div>
   </aside>;
 }
 
-/** Global search, role selector, notifications, and persisted theme control. */
-function Header({ dark, setDark, role, setRole, refreshProjects, onActivityCleared }) {
+/** Role, notification, and theme utilities anchored in the sidebar. */
+function SidebarUtilities({ dark, setDark, role, setRole, refreshProjects, onActivityCleared, collapsed }) {
   const [open,setOpen]=useState(false),[notifications,setNotifications]=useState([]);
   const [unread,setUnread]=useState(0),[approvals,setApprovals]=useState([]);
   const [loading,setLoading]=useState(false),[error,setError]=useState("");
@@ -156,11 +163,13 @@ function Header({ dark, setDark, role, setRole, refreshProjects, onActivityClear
   async function readAll(){
     try{await markAllNotificationsRead(roleKey);await refreshCenter()}catch(err){setError(err.message)}
   }
-  return <header>
-    <div className="header-actions">
-      <select value={role} onChange={(e) => setRole(e.target.value)}>
+  return <div className="sidebar-utilities">
+    <div className="sidebar-role" title={collapsed?`Current role: ${role}`:undefined}>
+      <Users size={17}/><select aria-label="Current role" value={role} onChange={(e) => setRole(e.target.value)}>
         {Object.keys(roles).map((item) => <option key={item}>{item}</option>)}
       </select>
+    </div>
+    <div className="utility-actions">
       <div className="notification-center" ref={centerRef}>
         <button className="icon-btn" aria-label="Notifications" aria-expanded={open}
           onClick={()=>{setOpen(value=>!value);if(!open)refreshCenter(true)}}>
@@ -189,11 +198,11 @@ function Header({ dark, setDark, role, setRole, refreshProjects, onActivityClear
             </button>)}</>}
         </section>}
       </div>
-      <button className="theme-switch" onClick={() => setDark(!dark)}>
+      <button className="theme-switch" aria-label={`Switch to ${dark?"light":"dark"} mode`} title={collapsed?`${dark?"Light":"Dark"} mode`:undefined} onClick={() => setDark(!dark)}>
         {dark ? <Sun size={16}/> : <Moon size={16}/>}<span>{dark ? "Light" : "Dark"}</span>
       </button>
     </div>
-  </header>;
+  </div>;
 }
 
 /** Reusable portfolio metric card. */
@@ -286,8 +295,9 @@ function CardTitle({ title, action }) {
 }
 
 /** Interactive single-project view with schedule, contacts, and site operations. */
-function ProjectExplorer({ projects, role, refreshProjects, dataRevision }) {
-  const [selected, setSelected] = useState(projects[0]?.code);
+function ProjectExplorer({ projects, role, refreshProjects, dataRevision, selectedProject, setSelectedProject }) {
+  const selected=selectedProject;
+  const setSelected=setSelectedProject;
   const [tab, setTab] = useState("overview");
   const [createOpen,setCreateOpen]=useState(false);
   const [portfolioOpen,setPortfolioOpen]=useState(false),[portfolioRevision,setPortfolioRevision]=useState(0);
@@ -619,7 +629,7 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
 }
 
 /** Conversational UI that preserves messages for the current browser session. */
-function Assistant({ role, projects, initialQuery, clearInitial, messages, setMessages, clearMessages }) {
+function LegacyAssistant({ role, projects, initialQuery, clearInitial, messages, setMessages, clearMessages }) {
   const [query,setQuery]=useState(initialQuery||""); const [loading,setLoading]=useState(false);
   const [selectedProject,setSelectedProject]=useState("");
   const messagesRef=useRef(null),forceScrollRef=useRef(false);
@@ -669,6 +679,106 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
     </section></div>;
 }
 
+/** Executive workspace for conversational portfolio intelligence. */
+function Assistant({ role, projects, initialQuery, clearInitial, messages, setMessages, clearMessages, selectedProject, setSelectedProject }) {
+  const [query,setQuery]=useState(initialQuery||"");
+  const [loading,setLoading]=useState(false);
+  const messagesRef=useRef(null),forceScrollRef=useRef(false);
+  useEffect(()=>{if(initialQuery){setQuery(initialQuery);clearInitial();}},[initialQuery]);
+  useEffect(()=>{
+    const container=messagesRef.current;
+    if(!container)return;
+    const nearBottom=container.scrollHeight-container.scrollTop-container.clientHeight<120;
+    if(forceScrollRef.current||nearBottom){
+      container.scrollTo({top:container.scrollHeight,behavior:forceScrollRef.current?"auto":"smooth"});
+      forceScrollRef.current=false;
+    }
+  },[messages,loading]);
+  async function submit(text=query){
+    if(!text.trim()||loading)return;
+    console.info("prosight.query_submitted",{query_length:text.trim().length,role:roles[role]});
+    forceScrollRef.current=true;
+    setMessages(current=>[...current,{role:"user",content:text}]);
+    setQuery("");setLoading(true);
+    const history=messages.filter(message=>["user","assistant"].includes(message.role)&&!message.error&&!message.intro)
+      .slice(-20).map(({role:messageRole,content})=>({role:messageRole,content}));
+    try{
+      const result=await askAgent(text,roles[role],selectedProject||null,history);
+      console.info("prosight.response_rendered",{request_id:result.request_id,provider:result.mode,duration_ms:result.duration_ms});
+      setMessages(current=>[...current,{role:"assistant",content:result.answer,citations:result.citations,route:result.agent_route,
+        mode:result.mode,notice:result.notice,requestId:result.request_id,durationMs:result.duration_ms}]);
+    }catch(error){
+      console.error("prosight.client_error",{request_id:error.requestId||null,error_type:error.name});
+      setMessages(current=>[...current,{role:"assistant",content:`I could not reach the ProSight service. Reference: ${error.requestId||"not available"}.`,error:true}]);
+    }finally{setLoading(false);}
+  }
+  const selected=projects.find(project=>project.code===selectedProject);
+  const contextName=selected?.name||"All projects";
+  const hasConversation=messages.some(message=>!message.intro);
+  const contextSuffix=selected?` for ${selected.code}`:"";
+  const promptCards=[
+    {icon:TrendingUp,label:"Project health",description:"Progress, delays and emerging delivery risk",query:`Summarize project health${contextSuffix}`},
+    {icon:ReceiptText,label:"Invoice & cash flow",description:"Approvals, collections and outstanding value",query:`Show invoice and payment risks${contextSuffix}`},
+    {icon:Users,label:"Manpower",description:"Allocation, availability and resource pressure",query:`Analyze manpower allocation${contextSuffix}`},
+    {icon:HardHat,label:"Schedule risk",description:"Milestones, variance and recommended actions",query:`Explain schedule risks${contextSuffix}`},
+  ];
+  const quickPrompts=selected
+    ? [`Why is ${selected.code} delayed?`,`Show outstanding invoices for ${selected.code}`,`Compare planned and actual manpower for ${selected.code}`]
+    : ["Which active projects are delayed?","Show portfolio invoice risks","Where is manpower under-allocated?"];
+  return <div className="assistant-page">
+    <PageTitle eyebrow="Multi-agent project intelligence" title="AI Project Assistant" subtitle="Ask about structured project data or evidence from uploaded reports.">
+      <div className="assistant-title-actions">
+        <label className="context-selector"><span>Analysis context</span>
+          <select value={selectedProject} onChange={event=>setSelectedProject(event.target.value)}>
+            <option value="">All projects</option>
+            {projects.map(project=><option value={project.code} key={project.code}>{project.code} — {project.name}</option>)}
+          </select>
+        </label>
+        <button className="new-chat-action" aria-label="Start a new chat" title="Start a new chat" disabled={loading} onClick={clearMessages}><RotateCcw size={15}/> New chat</button>
+      </div>
+    </PageTitle>
+    <div className="suggestions">{quickPrompts.map(item=><button key={item} onClick={()=>submit(item)}>{item}</button>)}</div>
+    <section className="chat card">
+      <div className="messages" ref={messagesRef}>
+        {!hasConversation&&!loading&&<div className="assistant-welcome">
+          <div className="welcome-copy"><span><Sparkles size={14}/> Project intelligence workspace</span>
+            <h2>What would you like to understand today?</h2>
+            <p>Explore delivery, commercial and resource signals across <b>{contextName}</b>.</p>
+          </div>
+          <div className="prompt-grid">{promptCards.map(({icon:Icon,label,description,query:prompt})=>
+            <button key={label} onClick={()=>submit(prompt)}><i><Icon size={19}/></i><span><b>{label}</b><small>{description}</small></span><ChevronRight size={16}/></button>)}
+          </div>
+        </div>}
+        {messages.filter(message=>!message.intro).map((message,index)=><div className={`message ${message.role} ${message.error?"error":""}`} key={index}>
+          <div className="avatar">{message.role==="assistant"?<Bot size={18}/>:<Users size={18}/>}</div>
+          <div><div className="message-content">{message.role==="assistant"?<AssistantText content={message.content}/>:<p>{message.content}</p>}</div>
+            {message.role==="assistant"&&(message.mode||message.route?.length>0||message.requestId||message.notice)&&
+              <details className="response-details"><summary>Response details</summary><div className="response-meta">
+                {message.mode&&<div className={`mode-badge ${message.mode}`}>{message.mode==="openai"?"OpenAI reasoning":"Local data mode"}</div>}
+                {message.route?.length>0&&<div className="agent-route">{message.route.map((agent,routeIndex)=><span key={`${agent}-${routeIndex}`}>{agent.replaceAll("_"," ")}</span>)}</div>}
+                {message.requestId&&message.mode&&<div className="request-meta">Request {message.requestId.slice(0,8)} · {message.durationMs} ms</div>}
+                {message.notice&&<div className="mode-notice">{message.notice}</div>}
+              </div></details>}
+            {message.citations?.length>0&&<details className="source-details"><summary>Sources used <span>{message.citations.length}</span></summary>
+              {message.citations.map(citation=><span key={citation}>{citation}</span>)}</details>}
+          </div>
+        </div>)}
+        {loading&&<div className="analysis-loader"><span className="assistant-orb"><Sparkles size={16}/></span><div>
+          <b>Preparing project intelligence</b><small>Reviewing records, evidence and portfolio signals…</small>
+          <i><em/><em/><em/></i></div></div>}
+      </div>
+      <div className="composer-shell">
+        <div className="composer-context"><span><Building2 size={13}/>{contextName}</span><small>Enter to send · Shift + Enter for a new line</small></div>
+        <div className="composer"><textarea rows="1" value={query} onChange={event=>setQuery(event.target.value)}
+          onKeyDown={event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();submit();}}}
+          placeholder="Ask about invoices, manpower, schedules, risks or uploaded evidence…"/>
+          <button className="primary" aria-label="Send question" disabled={loading||!query.trim()} onClick={()=>submit()}><Send size={18}/></button>
+        </div>
+      </div>
+    </section>
+  </div>;
+}
+
 /** Root component responsible for shared provider data, theme, and navigation state. */
 const initialMessages=()=>[{role:"assistant",content:"Hello — I’m ProSight AI. Ask me about project progress, contacts, activities, resources, or milestones.",citations:[],intro:true}];
 
@@ -677,6 +787,7 @@ export default function App(){
   const [role,setRole]=useState("Project Manager"),[projects,setProjects]=useState([]),[loading,setLoading]=useState(true);
   const [collapsed,setCollapsed]=useState(false),[initialQuery,setInitialQuery]=useState("");
   const [messages,setMessages]=useState(initialMessages),[dataRevision,setDataRevision]=useState(0);
+  const [selectedProject,setSelectedProject]=useState("");
   // Theme preference is local to the browser and does not affect server data.
   useEffect(()=>{document.documentElement.dataset.theme=dark?"dark":"light";localStorage.theme=dark?"dark":"light"},[dark]);
   // Changing roles refetches data so contact masking is enforced by Python.
@@ -692,15 +803,17 @@ export default function App(){
     }
   }
   function goToAssistant(q){setInitialQuery(q);setPage("assistant")}
-  return <div className="app-shell"><Sidebar {...{page,setPage,collapsed,setCollapsed}}/><div className="main-shell">
-    <Header dark={dark} setDark={setDark} role={role} refreshProjects={refreshProjects}
-      onActivityCleared={activityCleared}
-      setRole={nextRole=>{setRole(nextRole);setMessages(initialMessages())}}/><main className={loading?"loading":""}>
+  return <div className="app-shell"><Sidebar {...{page,setPage,collapsed,setCollapsed,dark,setDark,refreshProjects}}
+    onActivityCleared={activityCleared}
+    role={role} setRole={nextRole=>{setRole(nextRole);setMessages(initialMessages());setSelectedProject("")}}/><div className="main-shell">
+    <main className={loading?"loading":""}>
       {loading?<div className="loader"><i/></div>:<>
       {page==="dashboard"&&<Dashboard projects={projects} goToAssistant={goToAssistant}/>}
       {page==="projects"&&<ProjectExplorer projects={projects} role={role}
-        refreshProjects={refreshProjects} dataRevision={dataRevision}/>}
+        refreshProjects={refreshProjects} dataRevision={dataRevision}
+        selectedProject={selectedProject} setSelectedProject={setSelectedProject}/>}
       {page==="assistant"&&<Assistant role={role} projects={projects} initialQuery={initialQuery} clearInitial={()=>setInitialQuery("")}
-        messages={messages} setMessages={setMessages} clearMessages={()=>setMessages(initialMessages())}/>}
+        messages={messages} setMessages={setMessages} clearMessages={()=>setMessages(initialMessages())}
+        selectedProject={selectedProject} setSelectedProject={setSelectedProject}/>}
       </>}</main></div></div>;
 }
