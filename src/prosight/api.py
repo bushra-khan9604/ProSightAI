@@ -433,13 +433,15 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.post("/api/portfolio-imports")
     def portfolio_import(
-        role: str = Form(...), file: UploadFile = File(...)
+        role: str = Form(...), dataset: str = Form("combined"), file: UploadFile = File(...)
     ) -> dict:
         _validate_role(role)
         _require_role(
             role, {"project_manager", "planning_engineer", "admin"},
             "This role cannot import portfolio data",
         )
+        if dataset not in {"combined", "manpower", "invoices"}:
+            raise HTTPException(status_code=400, detail="Unsupported portfolio import dataset")
         filename = Path(file.filename or "").name
         if Path(filename).suffix.lower() != ".xlsx":
             raise HTTPException(status_code=400, detail="Portfolio imports must be XLSX files")
@@ -461,7 +463,7 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             )
             try:
                 parsed = parse_portfolio_workbook(
-                    destination, runtime.repository.resolve_project_reference
+                    destination, runtime.repository.resolve_project_reference, dataset
                 )
                 return runtime.repository.apply_portfolio_import(record["id"], parsed)
             except (ValueError, KeyError) as error:
@@ -483,14 +485,20 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             temp_path.unlink(missing_ok=True)
 
     @app.get("/api/portfolio-imports/template")
-    def portfolio_import_template(role: str = Query(...)) -> FileResponse:
+    def portfolio_import_template(
+        role: str = Query(...), dataset: str = Query("combined")
+    ) -> FileResponse:
         _validate_role(role)
+        if dataset not in {"combined", "manpower", "invoices"}:
+            raise HTTPException(status_code=400, detail="Unsupported portfolio template dataset")
         PORTFOLIO_DIR.mkdir(parents=True, exist_ok=True)
-        path = PORTFOLIO_DIR / "ProSight-Portfolio-Import-Template.xlsx"
-        create_portfolio_template(path)
+        labels = {"combined": "Portfolio", "manpower": "Manpower", "invoices": "Project-Invoices"}
+        filename = f"ProSight-{labels[dataset]}-Import-Template.xlsx"
+        path = PORTFOLIO_DIR / filename
+        create_portfolio_template(path, dataset)
         return FileResponse(
             path,
-            filename="ProSight-Portfolio-Import-Template.xlsx",
+            filename=filename,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 

@@ -125,21 +125,30 @@ def _records(sheet: Any) -> list[tuple[int, dict[str, Any]]]:
 def parse_portfolio_workbook(
     path: Path,
     resolve_project: Callable[[str], str | None],
+    dataset: str = "combined",
 ) -> dict[str, Any]:
     """Validate the canonical workbook and return transaction-ready records."""
+    if dataset not in {"combined", "manpower", "invoices"}:
+        raise ValueError("Unsupported portfolio import dataset")
     workbook = load_workbook(path, read_only=False, data_only=True, keep_links=False)
     try:
-        required_sheets = {"Manpower", "Projects Invoices"}
+        required_sheets = {
+            "combined": {"Manpower", "Projects Invoices"},
+            "manpower": {"Manpower"},
+            "invoices": {"Projects Invoices"},
+        }[dataset]
         missing_sheets = required_sheets - set(workbook.sheetnames)
         if missing_sheets:
             raise ValueError(f"Workbook is missing sheets: {', '.join(sorted(missing_sheets))}")
-        manpower_sheet = workbook["Manpower"]
-        invoice_sheet = workbook["Projects Invoices"]
-        _headers(manpower_sheet, MANPOWER_HEADERS)
-        _headers(invoice_sheet, INVOICE_HEADERS)
+        manpower_sheet = workbook["Manpower"] if dataset in {"combined", "manpower"} else None
+        invoice_sheet = workbook["Projects Invoices"] if dataset in {"combined", "invoices"} else None
+        if manpower_sheet:
+            _headers(manpower_sheet, MANPOWER_HEADERS)
+        if invoice_sheet:
+            _headers(invoice_sheet, INVOICE_HEADERS)
 
         manpower, employee_keys = [], set()
-        for row_number, source in _records(manpower_sheet):
+        for row_number, source in _records(manpower_sheet) if manpower_sheet else []:
             emp_code = str(source.get("EMP Code") or "").strip()
             if not emp_code:
                 raise ValueError(f"Manpower row {row_number}: EMP Code is required")
@@ -163,7 +172,7 @@ def parse_portfolio_workbook(
             manpower.append(record)
 
         invoices, invoice_keys = [], set()
-        for row_number, source in _records(invoice_sheet):
+        for row_number, source in _records(invoice_sheet) if invoice_sheet else []:
             job_number = str(source.get("Job No") or "").strip()
             draft_number = str(source.get("Draft/ Prof. INV no.") or "").strip()
             if not job_number or not draft_number:
@@ -232,13 +241,20 @@ def generate_invoice_pivot(invoices: list[dict[str, Any]]) -> list[dict[str, Any
     ]
 
 
-def create_portfolio_template(path: Path) -> Path:
-    """Create the canonical two-sheet XLSX template."""
+def create_portfolio_template(path: Path, dataset: str = "combined") -> Path:
+    """Create a canonical combined or dataset-specific XLSX template."""
+    if dataset not in {"combined", "manpower", "invoices"}:
+        raise ValueError("Unsupported portfolio template dataset")
     workbook = Workbook()
-    manpower = workbook.active
-    manpower.title = "Manpower"
-    manpower.append(MANPOWER_HEADERS)
-    invoices = workbook.create_sheet("Projects Invoices")
-    invoices.append(INVOICE_HEADERS)
+    first = workbook.active
+    if dataset == "invoices":
+        first.title = "Projects Invoices"
+        first.append(INVOICE_HEADERS)
+    else:
+        first.title = "Manpower"
+        first.append(MANPOWER_HEADERS)
+        if dataset == "combined":
+            invoices = workbook.create_sheet("Projects Invoices")
+            invoices.append(INVOICE_HEADERS)
     workbook.save(path)
     return path

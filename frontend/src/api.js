@@ -63,9 +63,9 @@ export async function getProjectIngestionJobs(projectCode, role) {
   return response.json();
 }
 
-export async function uploadPortfolioWorkbook(file, role) {
+export async function uploadPortfolioWorkbook(file, role, dataset = "combined") {
   const body = new FormData();
-  body.append("file", file); body.append("role", role);
+  body.append("file", file); body.append("role", role); body.append("dataset", dataset);
   const response = await fetch("/api/portfolio-imports", { method: "POST", body });
   const payload = await response.json();
   if (!response.ok) {
@@ -75,8 +75,8 @@ export async function uploadPortfolioWorkbook(file, role) {
   return payload;
 }
 
-export function portfolioTemplateUrl(role) {
-  return `/api/portfolio-imports/template?role=${encodeURIComponent(role)}`;
+export function portfolioTemplateUrl(role, dataset = "combined") {
+  return `/api/portfolio-imports/template?role=${encodeURIComponent(role)}&dataset=${encodeURIComponent(dataset)}`;
 }
 
 export async function getPortfolioManpower(role, projectCode = "") {

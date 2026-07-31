@@ -398,33 +398,40 @@ function InvoicePivot({rows,projects}){
 
 function PortfolioImport({open,onClose,roleKey,onImported}){
   const [result,setResult]=useState(null),[error,setError]=useState(""),[loading,setLoading]=useState(false);
+  const [activeDataset,setActiveDataset]=useState(null);
   useEffect(()=>{if(open){setResult(null);setError("")}},[open]);
   useEffect(()=>{
     if(!open)return;
     const close=event=>{if(event.key==="Escape"&&!loading)onClose()};
     window.addEventListener("keydown",close);return()=>window.removeEventListener("keydown",close);
   },[open,loading,onClose]);
-  async function upload(file){
+  async function upload(file,dataset){
     if(!file)return;
-    setLoading(true);setError("");setResult(null);
-    try{const imported=await uploadPortfolioWorkbook(file,roleKey);setResult(imported);onImported()}
+    setLoading(true);setActiveDataset(dataset);setError("");setResult(null);
+    try{const imported=await uploadPortfolioWorkbook(file,roleKey,dataset);setResult({...imported,dataset});onImported()}
     catch(uploadError){setError(uploadError.message)}
-    finally{setLoading(false)}
+    finally{setLoading(false);setActiveDataset(null)}
   }
   if(!open)return null;
   return <div className="upload-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget&&!loading)onClose()}}>
     <aside className="upload-center portfolio-import" role="dialog" aria-modal="true" aria-label="Portfolio Data Import">
       <div className="upload-head"><div><span>PORTFOLIO CONTROLS</span><h2>Portfolio Data Import</h2></div>
         <button disabled={loading} onClick={onClose}><X/></button></div>
-      <p className="portfolio-help">Import canonical Manpower and Projects Invoices sheets. The complete workbook is validated before any records change, and the invoice pivot is generated from database records.</p>
-      <a className="template-download" href={portfolioTemplateUrl(roleKey)}><FileSpreadsheet size={17}/> Download XLSX template</a>
-      <label className="drop-zone"><Upload size={28}/><b>{loading?"Validating and importing…":"Choose portfolio XLSX workbook"}</b>
-        <span>Maximum file size 20 MB</span><input disabled={loading} type="file" accept=".xlsx" onChange={event=>upload(event.target.files[0])}/></label>
+      <p className="portfolio-help">Import manpower and project invoices independently. Each workbook is validated and applied without blocking the other dataset.</p>
+      <div className="portfolio-upload-grid">{[
+        {dataset:"manpower",title:"Manpower",description:"Employee allocation and project assignment data"},
+        {dataset:"invoices",title:"Project Invoices",description:"Invoice, payment, aging and risk data"},
+      ].map(item=><section className="portfolio-upload-option" key={item.dataset}>
+        <h3>{item.title}</h3><p>{item.description}</p>
+        <a className="template-download" href={portfolioTemplateUrl(roleKey,item.dataset)}><FileSpreadsheet size={17}/> Download template</a>
+        <label className="drop-zone"><Upload size={25}/><b>{activeDataset===item.dataset?"Validating and importing…":`Upload ${item.title} XLSX`}</b>
+          <span>Maximum file size 20 MB</span><input disabled={loading} type="file" accept=".xlsx" onChange={event=>upload(event.target.files[0],item.dataset)}/></label>
+      </section>)}</div>
       {loading&&<progress className="portfolio-progress" max="100"/>}
       {error&&<div className="upload-error"><b>Import failed</b><span>{error}</span></div>}
-      {result&&<div className="portfolio-result"><b>Portfolio import completed</b>
-        <span>Manpower: {result.summary?.manpower?.inserted||0} inserted, {result.summary?.manpower?.updated||0} updated</span>
-        <span>Invoices: {result.summary?.invoices?.inserted||0} inserted, {result.summary?.invoices?.updated||0} updated</span></div>}
+      {result&&<div className="portfolio-result"><b>{result.dataset==="manpower"?"Manpower":"Project invoice"} import completed</b>
+        {result.dataset==="manpower"&&<span>{result.summary?.manpower?.inserted||0} inserted, {result.summary?.manpower?.updated||0} updated</span>}
+        {result.dataset==="invoices"&&<span>{result.summary?.invoices?.inserted||0} inserted, {result.summary?.invoices?.updated||0} updated</span>}</div>}
     </aside>
   </div>;
 }
@@ -665,7 +672,7 @@ function LegacyAssistant({ role, projects, initialQuery, clearInitial, messages,
       {["Which active projects are delayed?","Show project contacts","What does the latest report say?"].map(item=><button key={item} onClick={()=>submit(item)}>{item}</button>)}
      </div>
     <section className="chat card"><div className="messages" ref={messagesRef}>{messages.map((m,i)=><div className={`message ${m.role}`} key={i}>
-      <div className="avatar">{m.role==="assistant"?<Bot size={18}/>:<Users size={18}/>}</div><div>
+      <div className="avatar">{m.role==="assistant"?<Sparkles size={18}/>:<Users size={18}/>}</div><div>
       {m.role==="assistant"?<AssistantText content={m.content}/>:<p>{m.content}</p>}
       {m.role==="assistant"&&m.mode&&<div className={`mode-badge ${m.mode}`}>{m.mode==="openai"?"OpenAI reasoning":"Local data mode"}</div>}
       {m.route?.length>0&&<div className="agent-route">{m.route.map((agent,i)=><span key={`${agent}-${i}`}>{agent.replaceAll("_"," ")}</span>)}</div>}
@@ -750,7 +757,7 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
           </div>
         </div>}
         {messages.filter(message=>!message.intro).map((message,index)=><div className={`message ${message.role} ${message.error?"error":""}`} key={index}>
-          <div className="avatar">{message.role==="assistant"?<Bot size={18}/>:<Users size={18}/>}</div>
+          <div className="avatar">{message.role==="assistant"?<Sparkles size={18}/>:<Users size={18}/>}</div>
           <div><div className="message-content">{message.role==="assistant"?<AssistantText content={message.content}/>:<p>{message.content}</p>}</div>
             {message.role==="assistant"&&(message.mode||message.route?.length>0||message.requestId||message.notice)&&
               <details className="response-details"><summary>Response details</summary><div className="response-meta">

@@ -117,6 +117,32 @@ class PortfolioImportTests(unittest.TestCase):
         finally:
             workbook.close()
 
+    def test_dataset_specific_templates_and_parsing(self):
+        manpower_path = Path(self.temporary.name) / "manpower-template.xlsx"
+        invoice_path = Path(self.temporary.name) / "invoice-template.xlsx"
+        create_portfolio_template(manpower_path, "manpower")
+        create_portfolio_template(invoice_path, "invoices")
+        manpower_book = load_workbook(manpower_path, read_only=True)
+        invoice_book = load_workbook(invoice_path, read_only=True)
+        try:
+            self.assertEqual(["Manpower"], manpower_book.sheetnames)
+            self.assertEqual(["Projects Invoices"], invoice_book.sheetnames)
+        finally:
+            manpower_book.close()
+            invoice_book.close()
+
+        source = self.workbook()
+        parsed_manpower = parse_portfolio_workbook(
+            source, self.repository.resolve_project_reference, "manpower"
+        )
+        parsed_invoices = parse_portfolio_workbook(
+            source, self.repository.resolve_project_reference, "invoices"
+        )
+        self.assertEqual(1, len(parsed_manpower["manpower"]))
+        self.assertEqual([], parsed_manpower["invoices"])
+        self.assertEqual([], parsed_invoices["manpower"])
+        self.assertEqual(1, len(parsed_invoices["invoices"]))
+
 
 if __name__ == "__main__":
     unittest.main()
