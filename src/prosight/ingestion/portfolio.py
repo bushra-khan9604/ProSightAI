@@ -15,6 +15,9 @@ MANPOWER_HEADERS = [
     "Mobilized Project", "Current Project", "Category", "Current Location",
     "Allocation", "Status", "Leave Balance", "Remarks",
 ]
+SCHEDULE_HEADERS = [
+    "Activity ID", "Activity Name", "Start", "Finish", "Original Duration",
+]
 INVOICE_HEADERS = [
     "S/N", "Prof. Date", "Draft/ Prof. INV no.", "Job No", "SAP PO No#",
     "PO Line#", "Contract", "COO", "ICV %", "ICV @ 5% (USD)",
@@ -97,7 +100,7 @@ def _date(value: Any, label: str, row: int) -> str | None:
     if isinstance(value, (date, datetime)):
         return value.date().isoformat() if isinstance(value, datetime) else value.isoformat()
     text = str(value).strip()
-    for pattern in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%d %B %Y"):
+    for pattern in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%d-%b-%y", "%d %B %Y"):
         try:
             return datetime.strptime(text, pattern).date().isoformat()
         except ValueError:
@@ -126,9 +129,10 @@ def parse_portfolio_workbook(
     path: Path,
     resolve_project: Callable[[str], str | None],
     dataset: str = "combined",
+    project_code: str | None = None,
 ) -> dict[str, Any]:
     """Validate the canonical workbook and return transaction-ready records."""
-    if dataset not in {"combined", "manpower", "invoices"}:
+    if dataset not in {"combined", "manpower", "invoices", "schedule"}:
         raise ValueError("Unsupported portfolio import dataset")
     workbook = load_workbook(path, read_only=False, data_only=True, keep_links=False)
     try:
@@ -136,16 +140,22 @@ def parse_portfolio_workbook(
             "combined": {"Manpower", "Projects Invoices"},
             "manpower": {"Manpower"},
             "invoices": {"Projects Invoices"},
+            "schedule": {"Project Schedule"},
         }[dataset]
         missing_sheets = required_sheets - set(workbook.sheetnames)
         if missing_sheets:
             raise ValueError(f"Workbook is missing sheets: {', '.join(sorted(missing_sheets))}")
         manpower_sheet = workbook["Manpower"] if dataset in {"combined", "manpower"} else None
         invoice_sheet = workbook["Projects Invoices"] if dataset in {"combined", "invoices"} else None
+        schedule_sheet = workbook["Project Schedule"] if dataset == "schedule" else None
         if manpower_sheet:
             _headers(manpower_sheet, MANPOWER_HEADERS)
         if invoice_sheet:
             _headers(invoice_sheet, INVOICE_HEADERS)
+        if schedule_sheet:
+            _headers(schedule_sheet, SCHEDULE_HEADERS)
+            if not project_code or not resolve_project(project_code):
+                raise ValueError("Project Schedule requires an authorized project")
 
         manpower, employee_keys = [], set()
         for row_number, source in _records(manpower_sheet) if manpower_sheet else []:
@@ -216,10 +226,45 @@ def parse_portfolio_workbook(
             )
             invoices.append(record)
 
+        schedule, activity_keys = [], set()
+        for row_number, source in _records(schedule_sheet) if schedule_sheet else []:
+            activity_id = str(source.get("Activity ID") or "").strip()
+            activity_name = str(source.get("Activity Name") or "").strip()
+            if not activity_id or not activity_name:
+                raise ValueError(
+                    f"Project Schedule row {row_number}: Activity ID and Activity Name are required"
+                )
+            key = activity_id.casefold()
+            if key in activity_keys:
+                raise ValueError(
+                    f"Project Schedule row {row_number}: duplicate Activity ID {activity_id}"
+                )
+            activity_keys.add(key)
+            start = _date(source.get("Start"), "Start", row_number)
+            finish = _date(source.get("Finish"), "Finish", row_number)
+            if not start or not finish:
+                raise ValueError(f"Project Schedule row {row_number}: Start and Finish are required")
+            if start > finish:
+                raise ValueError(f"Project Schedule row {row_number}: Start must not be after Finish")
+            duration = _decimal(
+                source.get("Original Duration"), "Original Duration", row_number, True
+            )
+            if duration is None or duration < 0 or not duration.is_integer():
+                raise ValueError(
+                    f"Project Schedule row {row_number}: Original Duration must be a non-negative integer"
+                )
+            schedule.append({
+                "project_code": project_code, "activity_id": activity_id,
+                "activity_name": activity_name, "start": start, "finish": finish,
+                "original_duration": int(duration),
+            })
+
         return {
             "manpower": manpower,
             "invoices": invoices,
-            "counts": {"manpower": len(manpower), "invoices": len(invoices)},
+            "schedule": schedule,
+            "counts": {"manpower": len(manpower), "invoices": len(invoices),
+                       "schedule": len(schedule)},
         }
     finally:
         workbook.close()
@@ -243,11 +288,16 @@ def generate_invoice_pivot(invoices: list[dict[str, Any]]) -> list[dict[str, Any
 
 def create_portfolio_template(path: Path, dataset: str = "combined") -> Path:
     """Create a canonical combined or dataset-specific XLSX template."""
-    if dataset not in {"combined", "manpower", "invoices"}:
+    if dataset not in {"combined", "manpower", "invoices", "schedule"}:
         raise ValueError("Unsupported portfolio template dataset")
     workbook = Workbook()
     first = workbook.active
-    if dataset == "invoices":
+    if dataset == "schedule":
+        first.title = "Project Schedule"
+        first.append(SCHEDULE_HEADERS)
+        first.append(["A1001", "Receive PO", "30-Mar-26", "06-Apr-26", 6])
+        first.append(["A1006", "Receive sketch from client", "06-Apr-26", "14-Apr-26", 7])
+    elif dataset == "invoices":
         first.title = "Projects Invoices"
         first.append(INVOICE_HEADERS)
     else:

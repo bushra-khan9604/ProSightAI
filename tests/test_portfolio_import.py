@@ -11,9 +11,11 @@ from openpyxl import Workbook, load_workbook
 from prosight.ingestion.portfolio import (
     INVOICE_HEADERS,
     MANPOWER_HEADERS,
+    SCHEDULE_HEADERS,
     create_portfolio_template,
     parse_portfolio_workbook,
 )
+from prosight.agents.database_manager import DatabaseManagerAgent
 from prosight.repository import DEFAULT_DATA, ProjectRepository
 
 
@@ -142,6 +144,56 @@ class PortfolioImportTests(unittest.TestCase):
         self.assertEqual([], parsed_manpower["invoices"])
         self.assertEqual([], parsed_invoices["manpower"])
         self.assertEqual(1, len(parsed_invoices["invoices"]))
+
+    def test_schedule_template_parsing_and_upsert_retains_omitted_activities(self):
+        path = Path(self.temporary.name) / "schedule.xlsx"
+        create_portfolio_template(path, "schedule")
+        workbook = load_workbook(path)
+        try:
+            sheet = workbook["Project Schedule"]
+            self.assertEqual(SCHEDULE_HEADERS, [cell.value for cell in sheet[1]])
+            sheet.delete_rows(2, sheet.max_row)
+            sheet.append(["A1001", "Receive PO", "30-Mar-26", "06-Apr-26", 6])
+            sheet.append(["A1006", "Receive sketch", "06-Apr-26", "14-Apr-26", 7])
+            workbook.save(path)
+        finally:
+            workbook.close()
+        parsed = parse_portfolio_workbook(
+            path, self.repository.resolve_project_reference, "schedule", "PRJ-2024-001"
+        )
+        self.assertEqual("2026-03-30", parsed["schedule"][0]["start"])
+        first = self.repository.create_portfolio_import(
+            "schedule.xlsx", "schedule-one", str(path), "planning_engineer",
+            "schedule", "PRJ-2024-001",
+        )
+        result = self.repository.apply_portfolio_import(first["id"], parsed)
+        self.assertEqual({"inserted": 2, "updated": 0}, result["summary"]["schedule"])
+
+        parsed["schedule"] = [{**parsed["schedule"][0], "activity_name": "Receive updated PO"}]
+        second = self.repository.create_portfolio_import(
+            "schedule-two.xlsx", "schedule-two", str(path), "project_manager",
+            "schedule", "PRJ-2024-001",
+        )
+        result = self.repository.apply_portfolio_import(second["id"], parsed)
+        self.assertEqual({"inserted": 0, "updated": 1}, result["summary"]["schedule"])
+        activities = self.repository.list_project_schedule("PRJ-2024-001")
+        self.assertEqual(["A1001", "A1006"], [item["activity_id"] for item in activities])
+        self.assertEqual("Receive updated PO", activities[0]["activity_name"])
+        evidence = DatabaseManagerAgent(self.repository).read(
+            "Show the project schedule", "PRJ-2024-001", "project_manager"
+        )
+        self.assertEqual(["A1001", "A1006"], [item["activity_id"] for item in evidence.records])
+
+    def test_schedule_rejects_duplicate_ids_and_invalid_boundaries(self):
+        path = Path(self.temporary.name) / "bad-schedule.xlsx"
+        workbook = Workbook();sheet = workbook.active;sheet.title = "Project Schedule"
+        sheet.append(SCHEDULE_HEADERS)
+        sheet.append(["A1", "First", "10-Apr-26", "01-Apr-26", 2])
+        workbook.save(path)
+        with self.assertRaisesRegex(ValueError, "Start must not be after Finish"):
+            parse_portfolio_workbook(
+                path, self.repository.resolve_project_reference, "schedule", "PRJ-2024-001"
+            )
 
 
 if __name__ == "__main__":

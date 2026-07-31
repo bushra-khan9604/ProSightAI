@@ -24,6 +24,30 @@ class DatabaseManagerAgent:
         evidence for the Writer Agent.
         """
         normalized = query.casefold()
+        detailed_schedule = any(term in normalized for term in (
+            "project schedule", "activity id", "original duration",
+            "activity start", "activity finish", "schedule activity",
+        ))
+        if detailed_schedule:
+            if not project_code:
+                return DatabaseEvidence(
+                    summary="Select a project before asking about its imported schedule."
+                )
+            if not self.repository.find_project(project_code, role):
+                return DatabaseEvidence(summary="Project was not found")
+            activities = self.repository.list_project_schedule(project_code)
+            return DatabaseEvidence(
+                records=activities,
+                evidence=[
+                    EvidenceItem(
+                        text=f"Authorized schedule activity: {item}",
+                        citation=f"Project schedule: {project_code}",
+                        metadata={"project_code": project_code, "source_type": "database"},
+                    )
+                    for item in activities[:100]
+                ],
+                summary=f"Found {len(activities)} project schedule activities",
+            )
         if any(term in normalized for term in ("invoice", "payment", "remittance", "aging", "risk profile")):
             invoices = self.repository.list_invoices(project_code)
             if "pivot" in normalized:

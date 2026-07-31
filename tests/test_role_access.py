@@ -71,6 +71,22 @@ class RoleAccessTests(unittest.TestCase):
         )
         self.assertEqual(400, response.status_code)
 
+    def test_query_stream_reports_states_and_final_answer(self):
+        with patch.dict("os.environ", {"PROSIGHT_AI_PROVIDER": "local"}):
+            response = self.client.post(
+                "/api/query/stream",
+                json={"query": "List active projects", "history": [],
+                      "user_role": "project_manager", "project_code": None},
+            )
+        self.assertEqual(200, response.status_code)
+        body = response.text
+        states = [body.index(value) for value in (
+            '"state": "thinking"', '"state": "checking_database"',
+            '"state": "creating_response"', "event: final",
+        )]
+        self.assertEqual(sorted(states), states)
+        self.assertNotIn("Preparing project intelligence", body)
+
     def test_query_accepts_bounded_user_assistant_history(self):
         response = self.client.post(
             "/api/query",

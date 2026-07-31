@@ -156,15 +156,31 @@ class ProjectRepository:
                         import_id TEXT NOT NULL,
                         PRIMARY KEY(job_number, draft_invoice_number)
                     );
+                    CREATE TABLE IF NOT EXISTS project_schedule_activities (
+                        project_code TEXT NOT NULL,
+                        activity_id TEXT NOT NULL,
+                        activity_name TEXT NOT NULL,
+                        start_date TEXT NOT NULL,
+                        finish_date TEXT NOT NULL,
+                        original_duration INTEGER NOT NULL,
+                        import_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(project_code, activity_id)
+                    );
                     CREATE INDEX IF NOT EXISTS idx_manpower_project
                         ON manpower_assignments(current_project_code);
                     CREATE INDEX IF NOT EXISTS idx_invoices_project
                         ON project_invoices(project_code);
+                    CREATE INDEX IF NOT EXISTS idx_schedule_project_start
+                        ON project_schedule_activities(project_code, start_date);
                     """
                 )
                 self._ensure_column(db, "documents", "reporting_date", "TEXT")
                 self._ensure_column(db, "documents", "effective_date", "TEXT")
                 self._ensure_column(db, "documents", "date_status", "TEXT NOT NULL DEFAULT 'pending'")
+                self._ensure_column(db, "portfolio_imports", "dataset", "TEXT")
+                self._ensure_column(db, "portfolio_imports", "project_code", "TEXT")
                 # Existing pending requests predate notifications but must still
                 # appear as unread Admin work after this additive migration.
                 pending = db.execute(
@@ -483,7 +499,8 @@ class ProjectRepository:
         return partial[0] if len(partial) == 1 else None
 
     def create_portfolio_import(
-        self, filename: str, checksum: str, stored_path: str, uploaded_by: str
+        self, filename: str, checksum: str, stored_path: str, uploaded_by: str,
+        dataset: str = "combined", project_code: str | None = None,
     ) -> dict[str, Any]:
         """Create durable import and job records before workbook validation."""
         self._ensure()
@@ -492,8 +509,11 @@ class ProjectRepository:
             with db:
                 db.execute(
                     """INSERT INTO portfolio_imports
-                       VALUES (?,?,?,?,?,'processing',NULL,NULL,?,NULL)""",
-                    (import_id, filename, checksum, stored_path, uploaded_by, now),
+                       (id,filename,checksum,stored_path,uploaded_by,status,summary_json,
+                        error_message,created_at,completed_at,dataset,project_code)
+                       VALUES (?,?,?,?,?,'processing',NULL,NULL,?,NULL,?,?)""",
+                    (import_id, filename, checksum, stored_path, uploaded_by, now,
+                     dataset, project_code),
                 )
                 db.execute(
                     """INSERT INTO portfolio_import_jobs
@@ -534,7 +554,7 @@ class ProjectRepository:
         if not record:
             raise KeyError("Portfolio import not found")
         now, inserted_manpower, updated_manpower = self._now(), 0, 0
-        inserted_invoices, updated_invoices = 0, 0
+        inserted_invoices, updated_invoices, inserted_schedule, updated_schedule = 0, 0, 0, 0
         with closing(self.connect()) as db:
             with db:
                 for item in parsed["manpower"]:
@@ -620,9 +640,40 @@ class ProjectRepository:
                         db, record["uploaded_by"], "portfolio_invoice_upsert",
                         "project_invoice", target, before, item, now,
                     )
+                for item in parsed.get("schedule", []):
+                    before_row = db.execute(
+                        """SELECT * FROM project_schedule_activities
+                           WHERE project_code=? AND activity_id=?""",
+                        (item["project_code"], item["activity_id"]),
+                    ).fetchone()
+                    before = dict(before_row) if before_row else None
+                    if before_row:
+                        updated_schedule += 1
+                    else:
+                        inserted_schedule += 1
+                    db.execute(
+                        """INSERT INTO project_schedule_activities
+                           (project_code,activity_id,activity_name,start_date,finish_date,
+                            original_duration,import_id,created_at,updated_at)
+                           VALUES (?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(project_code,activity_id) DO UPDATE SET
+                            activity_name=excluded.activity_name,start_date=excluded.start_date,
+                            finish_date=excluded.finish_date,
+                            original_duration=excluded.original_duration,
+                            import_id=excluded.import_id,updated_at=excluded.updated_at""",
+                        (item["project_code"], item["activity_id"], item["activity_name"],
+                         item["start"], item["finish"], item["original_duration"],
+                         import_id, now, now),
+                    )
+                    self._insert_audit(
+                        db, record["uploaded_by"], "portfolio_schedule_upsert",
+                        "project_schedule_activity",
+                        f"{item['project_code']}:{item['activity_id']}", before, item, now,
+                    )
                 summary = {
                     "manpower": {"inserted": inserted_manpower, "updated": updated_manpower},
                     "invoices": {"inserted": inserted_invoices, "updated": updated_invoices},
+                    "schedule": {"inserted": inserted_schedule, "updated": updated_schedule},
                     "pivot_row_count": db.execute(
                         """SELECT COUNT(*) AS count FROM (
                            SELECT levels,status FROM project_invoices
@@ -643,9 +694,23 @@ class ProjectRepository:
                     db, record["uploaded_by"], "portfolio_import_completed", "PORTFOLIO",
                     import_id, "Portfolio import completed",
                     f"Imported {len(parsed['manpower'])} manpower and "
-                    f"{len(parsed['invoices'])} invoice rows.",
+                    f"{len(parsed['invoices'])} invoice and "
+                    f"{len(parsed.get('schedule', []))} schedule rows.",
                 )
         return self.get_portfolio_import(import_id)
+
+    def list_project_schedule(self, project_code: str) -> list[dict[str, Any]]:
+        """Return normalized project schedule activities in deterministic order."""
+        self._ensure()
+        with closing(self.connect()) as db:
+            rows = db.execute(
+                """SELECT project_code,activity_id,activity_name,start_date AS start,
+                          finish_date AS finish,original_duration
+                   FROM project_schedule_activities WHERE project_code=?
+                   ORDER BY start_date,finish_date,activity_id""",
+                (project_code,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     @staticmethod
     def _insert_audit(

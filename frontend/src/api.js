@@ -31,6 +31,36 @@ export async function askAgent(query, userRole, projectCode = null, history = []
   return payload;
 }
 
+/** Stream Assistant execution states and return the compatible final response. */
+export async function askAgentStream(query, userRole, projectCode = null, history = [], handlers = {}) {
+  const response = await fetch("/api/query/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({ query, history, user_role: userRole, project_code: projectCode }),
+  });
+  if (!response.ok || !response.body) throw new Error("The assistant could not answer");
+  const reader=response.body.getReader(),decoder=new TextDecoder();
+  let buffer="",finalPayload=null,streamError=null;
+  while(true){
+    const {value,done}=await reader.read();
+    buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
+    const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";
+    for(const block of blocks){
+      const type=block.match(/^event:\s*(.+)$/m)?.[1];
+      const raw=block.match(/^data:\s*(.+)$/m)?.[1];
+      if(!type||!raw)continue;
+      const payload=JSON.parse(raw);
+      if(type==="status")handlers.onStatus?.(payload.label||"Thinking");
+      if(type==="final")finalPayload=payload;
+      if(type==="error")streamError=payload;
+    }
+    if(done)break;
+  }
+  if(streamError){const error=new Error(streamError.message||"The assistant could not answer");error.requestId=streamError.request_id;throw error;}
+  if(!finalPayload)throw new Error("The Assistant stream ended without a final response");
+  return finalPayload;
+}
+
 export async function updateProject(projectCode, project, role) {
   const response = await fetch(`/api/projects/${encodeURIComponent(projectCode)}?role=${encodeURIComponent(role)}`, {
     method: "PATCH",
@@ -63,9 +93,10 @@ export async function getProjectIngestionJobs(projectCode, role) {
   return response.json();
 }
 
-export async function uploadPortfolioWorkbook(file, role, dataset = "combined") {
+export async function uploadPortfolioWorkbook(file, role, dataset = "combined", projectCode = "") {
   const body = new FormData();
   body.append("file", file); body.append("role", role); body.append("dataset", dataset);
+  if (projectCode) body.append("project_code", projectCode);
   const response = await fetch("/api/portfolio-imports", { method: "POST", body });
   const payload = await response.json();
   if (!response.ok) {
@@ -77,6 +108,12 @@ export async function uploadPortfolioWorkbook(file, role, dataset = "combined") 
 
 export function portfolioTemplateUrl(role, dataset = "combined") {
   return `/api/portfolio-imports/template?role=${encodeURIComponent(role)}&dataset=${encodeURIComponent(dataset)}`;
+}
+
+export async function getProjectSchedule(role, projectCode) {
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectCode)}/schedule?role=${encodeURIComponent(role)}`);
+  if (!response.ok) throw new Error("Could not load project schedule");
+  return response.json();
 }
 
 export async function getPortfolioManpower(role, projectCode = "") {

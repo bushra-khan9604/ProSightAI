@@ -10,9 +10,9 @@ import {
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  askAgent, confirmDocumentDate, createProjectImportPreview, createProjectPreview,
+  askAgent, askAgentStream, confirmDocumentDate, createProjectImportPreview, createProjectPreview,
   decideChange, deleteDocument, getChangeRequest, getDocuments, getIngestionJob,
-  getApprovals, getInvoicePivot, getNotifications, getPortfolioInvoices,
+  getApprovals, getInvoicePivot, getNotifications, getPortfolioInvoices, getProjectSchedule,
   getPortfolioManpower, getProjectIngestionJobs, getProjects, markAllNotificationsRead,
   markNotificationRead, portfolioTemplateUrl, updateProject, updateProjectImport,
   uploadPortfolioWorkbook, uploadProjectFile,
@@ -301,7 +301,7 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
   const [tab, setTab] = useState("overview");
   const [createOpen,setCreateOpen]=useState(false);
   const [portfolioOpen,setPortfolioOpen]=useState(false),[portfolioRevision,setPortfolioRevision]=useState(0);
-  const [portfolioManpower,setPortfolioManpower]=useState([]),[invoices,setInvoices]=useState([]),[pivot,setPivot]=useState([]);
+  const [portfolioManpower,setPortfolioManpower]=useState([]),[invoices,setInvoices]=useState([]),[pivot,setPivot]=useState([]),[schedule,setSchedule]=useState([]);
   const project = projects.find((p)=>p.code===selected) || projects[0];
   const roleKey=roles[role];
   useEffect(()=>{
@@ -312,6 +312,7 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
     if(tab==="portfolio manpower")getPortfolioManpower(roleKey,project.code).then(setPortfolioManpower).catch(()=>setPortfolioManpower([]));
     if(tab==="project invoices")getPortfolioInvoices(roleKey,project.code).then(setInvoices).catch(()=>setInvoices([]));
     if(tab==="invoice pivot")getInvoicePivot(roleKey).then(setPivot).catch(()=>setPivot([]));
+    if(tab==="project schedule")getProjectSchedule(roleKey,project.code).then(setSchedule).catch(()=>setSchedule([]));
   },[tab,project?.code,roleKey,portfolioRevision]);
   if (!project) return null;
   const manpower = project.manpower.map((m)=>({name:m.designation,value:m.count}));
@@ -334,7 +335,7 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
         <div><span>Variance</span><strong className={project.variance_pct<0?"negative":""}>{project.variance_pct>0?"+":""}{project.variance_pct} pp</strong></div>
         <div><span>Delay</span><strong>{project.delay_days} days</strong></div></div>
     </section>
-    <div className="tabs">{["overview","contacts","operations","milestones","portfolio manpower","project invoices","invoice pivot","update project"].map((item)=>
+    <div className="tabs">{["overview","contacts","operations","milestones","project schedule","portfolio manpower","project invoices","invoice pivot","update project"].map((item)=>
       <button className={tab===item?"active":""} onClick={()=>setTab(item)} key={item}>{item}</button>)}</div>
     {tab==="overview" && <section className="lower-grid">
       <article className="card"><CardTitle title="Schedule & progress"/><div className="date-grid">
@@ -357,6 +358,11 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
     </section>}
     {tab==="milestones" && <article className="card timeline large">{project.milestones.map((m,i)=>
       <div className="timeline-item" key={m.name}><i/><div><strong>{m.name}</strong><small>Milestone {i+1}</small></div><span>{m.status}</span></div>)}</article>}
+    {tab==="project schedule"&&<article className="card table-card portfolio-table"><table><thead><tr>
+      <th>Activity ID</th><th>Activity Name</th><th>Start</th><th>Finish</th><th>Original Duration</th>
+    </tr></thead><tbody>{schedule.map(item=><tr key={item.activity_id}>
+      <td><b>{item.activity_id}</b></td><td>{item.activity_name}</td><td>{item.start}</td><td>{item.finish}</td><td>{item.original_duration}</td>
+    </tr>)}</tbody></table>{schedule.length===0&&<p className="empty">No detailed project schedule has been imported.</p>}</article>}
     {tab==="portfolio manpower"&&<article className="card table-card portfolio-table"><table><thead><tr>
       <th>EMP Code</th><th>Name</th><th>Designation</th><th>Department</th><th>Category</th><th>Location</th><th>Allocation</th><th>Status</th>
     </tr></thead><tbody>{portfolioManpower.map(item=><tr key={item.emp_code}>
@@ -381,6 +387,7 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
       setSelectedProject={setSelected} refreshProjects={refreshProjects}
     />
     <PortfolioImport open={portfolioOpen} onClose={()=>setPortfolioOpen(false)} roleKey={roleKey}
+      projects={projects} selectedProject={project.code}
       onImported={()=>setPortfolioRevision(value=>value+1)}/>
   </>;
 }
@@ -396,10 +403,12 @@ function InvoicePivot({rows,projects}){
   </tr>)}</tbody></table>{rows.length===0&&<p className="empty">No invoice pivot data is available.</p>}</article>;
 }
 
-function PortfolioImport({open,onClose,roleKey,onImported}){
-  const [result,setResult]=useState(null),[error,setError]=useState(""),[loading,setLoading]=useState(false);
+function PortfolioImport({open,onClose,roleKey,onImported,projects,selectedProject}){
+  const [feedback,setFeedback]=useState(null),[loading,setLoading]=useState(false);
+  const [dataset,setDataset]=useState("manpower"),[selectedFile,setSelectedFile]=useState("");
+  const [scheduleProject,setScheduleProject]=useState(selectedProject||"");
   const [activeDataset,setActiveDataset]=useState(null);
-  useEffect(()=>{if(open){setResult(null);setError("")}},[open]);
+  useEffect(()=>{if(open){setFeedback(null);setSelectedFile("");setScheduleProject(selectedProject||projects[0]?.code||"")}},[open,selectedProject]);
   useEffect(()=>{
     if(!open)return;
     const close=event=>{if(event.key==="Escape"&&!loading)onClose()};
@@ -407,31 +416,43 @@ function PortfolioImport({open,onClose,roleKey,onImported}){
   },[open,loading,onClose]);
   async function upload(file,dataset){
     if(!file)return;
-    setLoading(true);setActiveDataset(dataset);setError("");setResult(null);
-    try{const imported=await uploadPortfolioWorkbook(file,roleKey,dataset);setResult({...imported,dataset});onImported()}
-    catch(uploadError){setError(uploadError.message)}
+    setSelectedFile(file.name);
+    setLoading(true);setActiveDataset(dataset);setFeedback(null);
+    try{const imported=await uploadPortfolioWorkbook(file,roleKey,dataset,dataset==="schedule"?scheduleProject:"");setFeedback({type:"success",result:imported});onImported()}
+    catch(uploadError){setFeedback({type:"error",message:uploadError.message})}
     finally{setLoading(false);setActiveDataset(null)}
   }
+  const options=[
+    {dataset:"manpower",title:"Manpower",description:"Employee allocation and project assignment data"},
+    {dataset:"invoices",title:"Project Invoices",description:"Invoice, payment, aging and risk data"},
+    {dataset:"schedule",title:"Project Schedule",description:"Project activities, dates and original durations"},
+  ];
+  const item=options.find(option=>option.dataset===dataset)||options[0];
+  function selectDataset(value){setDataset(value);setFeedback(null);setSelectedFile("")}
   if(!open)return null;
   return <div className="upload-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget&&!loading)onClose()}}>
-    <aside className="upload-center portfolio-import" role="dialog" aria-modal="true" aria-label="Portfolio Data Import">
+    <aside className={`upload-center portfolio-import ${loading?"is-loading":""}`} role="dialog" aria-modal="true" aria-label="Portfolio Data Import">
       <div className="upload-head"><div><span>PORTFOLIO CONTROLS</span><h2>Portfolio Data Import</h2></div>
         <button disabled={loading} onClick={onClose}><X/></button></div>
-      <p className="portfolio-help">Import manpower and project invoices independently. Each workbook is validated and applied without blocking the other dataset.</p>
-      <div className="portfolio-upload-grid">{[
-        {dataset:"manpower",title:"Manpower",description:"Employee allocation and project assignment data"},
-        {dataset:"invoices",title:"Project Invoices",description:"Invoice, payment, aging and risk data"},
-      ].map(item=><section className="portfolio-upload-option" key={item.dataset}>
-        <h3>{item.title}</h3><p>{item.description}</p>
-        <a className="template-download" href={portfolioTemplateUrl(roleKey,item.dataset)}><FileSpreadsheet size={17}/> Download template</a>
+      <p className="portfolio-help">Choose one portfolio dataset, download its template, then upload the completed XLSX workbook.</p>
+      <label className="portfolio-dataset-select"><span>Data to import</span><select value={dataset} disabled={loading} onChange={event=>selectDataset(event.target.value)}>
+        {options.map(option=><option value={option.dataset} key={option.dataset}>{option.title}</option>)}</select></label>
+      <div className="portfolio-upload-grid"><section className={`portfolio-upload-option ${activeDataset===item.dataset?"active":""}`}>
+        <div className="portfolio-card-heading"><i><FileSpreadsheet size={20}/></i><div><h3>{item.title}</h3><p>{item.description}</p></div></div>
+        <a className="template-download" href={portfolioTemplateUrl(roleKey,item.dataset)} aria-disabled={loading}
+          tabIndex={loading?-1:0} onClick={event=>{if(loading)event.preventDefault()}}><FileSpreadsheet size={17}/><span>Download {item.title} template</span></a>
+        <div className="upload-divider"><span>Then upload completed workbook</span></div>
+        {item.dataset==="schedule"&&<label className="schedule-project-select"><span>Target project</span><select value={scheduleProject} disabled={loading} onChange={event=>setScheduleProject(event.target.value)}>
+          {projects.map(project=><option value={project.code} key={project.code}>{project.code} — {project.name}</option>)}</select></label>}
         <label className="drop-zone"><Upload size={25}/><b>{activeDataset===item.dataset?"Validating and importing…":`Upload ${item.title} XLSX`}</b>
-          <span>Maximum file size 20 MB</span><input disabled={loading} type="file" accept=".xlsx" onChange={event=>upload(event.target.files[0],item.dataset)}/></label>
-      </section>)}</div>
+          <span>XLSX only · Maximum file size 20 MB</span><input className="accessible-file-input" disabled={loading} type="file" accept=".xlsx" onChange={event=>upload(event.target.files[0],item.dataset)}/>
+          <small className="selected-upload-name">{selectedFile||"No file selected"}</small></label>
+        {feedback?.type==="error"&&<div className="portfolio-card-feedback error"><b>Import failed</b><span>{feedback.message}</span></div>}
+        {feedback?.type==="success"&&<div className="portfolio-card-feedback success"><b>Import completed</b><span>{
+          `${feedback.result.summary?.[item.dataset]?.inserted||0} inserted, ${feedback.result.summary?.[item.dataset]?.updated||0} updated`
+        }</span></div>}
+      </section></div>
       {loading&&<progress className="portfolio-progress" max="100"/>}
-      {error&&<div className="upload-error"><b>Import failed</b><span>{error}</span></div>}
-      {result&&<div className="portfolio-result"><b>{result.dataset==="manpower"?"Manpower":"Project invoice"} import completed</b>
-        {result.dataset==="manpower"&&<span>{result.summary?.manpower?.inserted||0} inserted, {result.summary?.manpower?.updated||0} updated</span>}
-        {result.dataset==="invoices"&&<span>{result.summary?.invoices?.inserted||0} inserted, {result.summary?.invoices?.updated||0} updated</span>}</div>}
     </aside>
   </div>;
 }
@@ -705,18 +726,22 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
     if(!text.trim()||loading)return;
     console.info("prosight.query_submitted",{query_length:text.trim().length,role:roles[role]});
     forceScrollRef.current=true;
-    setMessages(current=>[...current,{role:"user",content:text}]);
+    const assistantId=`pending-${Date.now()}-${Math.random()}`;
+    setMessages(current=>[...current,{role:"user",content:text},{role:"assistant",content:"Thinking",pending:true,id:assistantId}]);
     setQuery("");setLoading(true);
     const history=messages.filter(message=>["user","assistant"].includes(message.role)&&!message.error&&!message.intro)
       .slice(-20).map(({role:messageRole,content})=>({role:messageRole,content}));
     try{
-      const result=await askAgent(text,roles[role],selectedProject||null,history);
+      const result=await askAgentStream(text,roles[role],selectedProject||null,history,{
+        onStatus:status=>setMessages(current=>current.map(message=>message.id===assistantId?{...message,content:status}:message)),
+      });
       console.info("prosight.response_rendered",{request_id:result.request_id,provider:result.mode,duration_ms:result.duration_ms});
-      setMessages(current=>[...current,{role:"assistant",content:result.answer,citations:result.citations,route:result.agent_route,
-        mode:result.mode,notice:result.notice,requestId:result.request_id,durationMs:result.duration_ms}]);
+      setMessages(current=>current.map(message=>message.id===assistantId?{...message,pending:false,content:result.answer,citations:result.citations,
+        route:result.agent_route,mode:result.mode,notice:result.notice,requestId:result.request_id,durationMs:result.duration_ms}:message));
     }catch(error){
       console.error("prosight.client_error",{request_id:error.requestId||null,error_type:error.name});
-      setMessages(current=>[...current,{role:"assistant",content:`I could not reach the ProSight service. Reference: ${error.requestId||"not available"}.`,error:true}]);
+      setMessages(current=>current.map(message=>message.id===assistantId?{...message,pending:false,
+        content:`I could not reach the ProSight service. Reference: ${error.requestId||"not available"}.`,error:true}:message));
     }finally{setLoading(false);}
   }
   const selected=projects.find(project=>project.code===selectedProject);
@@ -756,9 +781,11 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
             <button key={label} onClick={()=>submit(prompt)}><i><Icon size={19}/></i><span><b>{label}</b><small>{description}</small></span><ChevronRight size={16}/></button>)}
           </div>
         </div>}
-        {messages.filter(message=>!message.intro).map((message,index)=><div className={`message ${message.role} ${message.error?"error":""}`} key={index}>
+        {messages.filter(message=>!message.intro).map((message,index)=><div className={`message ${message.role} ${message.error?"error":""} ${message.pending?"pending":""}`} key={message.id||index}>
           <div className="avatar">{message.role==="assistant"?<Sparkles size={18}/>:<Users size={18}/>}</div>
-          <div><div className="message-content">{message.role==="assistant"?<AssistantText content={message.content}/>:<p>{message.content}</p>}</div>
+          <div><div className="message-content">{message.role==="assistant"?(message.pending
+            ?<div className="response-state"><span>{message.content}</span><i className="response-state-loader"><em/><em/><em/></i></div>
+            :<AssistantText content={message.content}/>):<p>{message.content}</p>}</div>
             {message.role==="assistant"&&(message.mode||message.route?.length>0||message.requestId||message.notice)&&
               <details className="response-details"><summary>Response details</summary><div className="response-meta">
                 {message.mode&&<div className={`mode-badge ${message.mode}`}>{message.mode==="openai"?"OpenAI reasoning":"Local data mode"}</div>}
@@ -770,9 +797,6 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
               {message.citations.map(citation=><span key={citation}>{citation}</span>)}</details>}
           </div>
         </div>)}
-        {loading&&<div className="analysis-loader"><span className="assistant-orb"><Sparkles size={16}/></span><div>
-          <b>Preparing project intelligence</b><small>Reviewing records, evidence and portfolio signals…</small>
-          <i><em/><em/><em/></i></div></div>}
       </div>
       <div className="composer-shell">
         <div className="composer-context"><span><Building2 size={13}/>{contextName}</span><small>Enter to send · Shift + Enter for a new line</small></div>

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import hashlib
+import json
 import shutil
 import tempfile
 import uuid
@@ -13,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .agents import MultiAgentOrchestrator
@@ -357,6 +359,87 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
                 detail={"error": "internal_error", "request_id": trace.request_id},
             ) from error
 
+    @app.post("/api/query/stream")
+    async def query_stream(payload: QueryRequest) -> StreamingResponse:
+        """Stream real orchestration states and a final backward-compatible answer."""
+        _validate_role(payload.user_role)
+
+        def encode(event_name: str, data: dict) -> str:
+            return f"event: {event_name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        labels = {
+            "thinking": "Thinking",
+            "checking_database": "Checking database",
+            "creating_response": "Creating response",
+        }
+
+        async def generate():
+            trace = RequestTrace()
+            loop = asyncio.get_running_loop()
+            statuses: asyncio.Queue[str] = asyncio.Queue()
+            last_state: str | None = None
+
+            def report(state: str) -> None:
+                loop.call_soon_threadsafe(statuses.put_nowait, state)
+
+            trace.event("query_received", role=payload.user_role,
+                        project_code=payload.project_code,
+                        query_preview=sanitize(payload.query))
+            trace.event("query_validated", role=payload.user_role,
+                        project_code=payload.project_code,
+                        query_length=len(payload.query), history_count=len(payload.history))
+            yield encode("meta", {"request_id": trace.request_id})
+            yield encode("status", {"state": "thinking", "label": "Thinking"})
+            try:
+                task = asyncio.create_task(asyncio.to_thread(
+                    runtime.orchestrator.run,
+                    payload.query.strip(), payload.user_role, payload.project_code, trace,
+                    [message.model_dump() for message in payload.history], report,
+                ))
+                while not task.done():
+                    try:
+                        state = await asyncio.wait_for(statuses.get(), timeout=.1)
+                    except asyncio.TimeoutError:
+                        continue
+                    if state != last_state:
+                        last_state = state
+                        yield encode("status", {
+                            "state": state,
+                            "label": labels.get(state, "Thinking"),
+                        })
+                result = await task
+                while not statuses.empty():
+                    state = statuses.get_nowait()
+                    if state != last_state:
+                        last_state = state
+                        yield encode("status", {
+                            "state": state,
+                            "label": labels.get(state, "Thinking"),
+                        })
+                result.update(request_id=trace.request_id, duration_ms=trace.duration_ms)
+                trace.event("response_generated", provider=result["mode"],
+                            agent_route=result.get("agent_route", []),
+                            citation_count=len(result.get("citations", [])),
+                            response_preview=sanitize(result.get("answer", "")))
+                yield encode("final", result)
+                trace.event("response_sent", status=200, provider=result["mode"],
+                            agent_route=result.get("agent_route", []))
+            except Exception as error:
+                logging.getLogger("prosight").exception(
+                    "query_stream_failed", extra={"event_data": {
+                        "event": "query_stream_failed", "request_id": trace.request_id,
+                        "error_type": type(error).__name__,
+                    }},
+                )
+                yield encode("error", {
+                    "message": "The Assistant could not complete the request.",
+                    "request_id": trace.request_id,
+                })
+
+        return StreamingResponse(generate(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+        })
+
     @app.post("/api/uploads", status_code=202)
     def upload(
         project_code: str = Form(...),
@@ -433,15 +516,21 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.post("/api/portfolio-imports")
     def portfolio_import(
-        role: str = Form(...), dataset: str = Form("combined"), file: UploadFile = File(...)
+        role: str = Form(...), dataset: str = Form("combined"),
+        project_code: str | None = Form(None), file: UploadFile = File(...)
     ) -> dict:
         _validate_role(role)
         _require_role(
             role, {"project_manager", "planning_engineer", "admin"},
             "This role cannot import portfolio data",
         )
-        if dataset not in {"combined", "manpower", "invoices"}:
+        if dataset not in {"combined", "manpower", "invoices", "schedule"}:
             raise HTTPException(status_code=400, detail="Unsupported portfolio import dataset")
+        if dataset == "schedule":
+            if not project_code:
+                raise HTTPException(status_code=400, detail="Select a project for the schedule import")
+            if not runtime.repository.find_project(project_code, role):
+                raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         filename = Path(file.filename or "").name
         if Path(filename).suffix.lower() != ".xlsx":
             raise HTTPException(status_code=400, detail="Portfolio imports must be XLSX files")
@@ -459,11 +548,12 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             destination = PORTFOLIO_DIR / f"{uuid.uuid4()}-{filename}"
             shutil.copy2(temp_path, destination)
             record = runtime.repository.create_portfolio_import(
-                filename, checksum, str(destination), role
+                filename, checksum, str(destination), role, dataset, project_code
             )
             try:
                 parsed = parse_portfolio_workbook(
-                    destination, runtime.repository.resolve_project_reference, dataset
+                    destination, runtime.repository.resolve_project_reference,
+                    dataset, project_code
                 )
                 return runtime.repository.apply_portfolio_import(record["id"], parsed)
             except (ValueError, KeyError) as error:
@@ -489,10 +579,11 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         role: str = Query(...), dataset: str = Query("combined")
     ) -> FileResponse:
         _validate_role(role)
-        if dataset not in {"combined", "manpower", "invoices"}:
+        if dataset not in {"combined", "manpower", "invoices", "schedule"}:
             raise HTTPException(status_code=400, detail="Unsupported portfolio template dataset")
         PORTFOLIO_DIR.mkdir(parents=True, exist_ok=True)
-        labels = {"combined": "Portfolio", "manpower": "Manpower", "invoices": "Project-Invoices"}
+        labels = {"combined": "Portfolio", "manpower": "Manpower",
+                  "invoices": "Project-Invoices", "schedule": "Project-Schedule"}
         filename = f"ProSight-{labels[dataset]}-Import-Template.xlsx"
         path = PORTFOLIO_DIR / filename
         create_portfolio_template(path, dataset)
@@ -525,6 +616,13 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         return runtime.repository.list_manpower(
             project_code, search, department, category, status, location
         )
+
+    @app.get("/api/projects/{project_code}/schedule")
+    def project_schedule(project_code: str, role: str = Query(...)) -> list[dict]:
+        _validate_role(role)
+        if not runtime.repository.find_project(project_code, role):
+            raise HTTPException(status_code=404, detail="Project not found or unauthorized")
+        return runtime.repository.list_project_schedule(project_code)
 
     @app.get("/api/portfolio/invoices")
     def portfolio_invoices(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 from ..config import get_settings
 from ..contracts import AgentAnswer, OrchestrationPlan, WriterInput
@@ -73,20 +73,21 @@ class MultiAgentOrchestrator:
         project_code: str | None,
         trace: RequestTrace,
         history: list[dict[str, str]] | None = None,
+        status_callback: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Execute with OpenAI when configured, or deterministic local test routing."""
         plan = self.plan(query, project_code)
         trace.event("orchestration_planned", agents=plan.agents, intent=plan.intent)
         settings = get_settings()
         if settings.ai_provider == "local" or not settings.openai_api_key:
-            return self._run_local(query, role, project_code, plan, trace).model_dump()
+            return self._run_local(query, role, project_code, plan, trace, status_callback).model_dump()
         try:
             return self._run_openai(
-                query, role, project_code, plan, trace, history or []
+                query, role, project_code, plan, trace, history or [], status_callback
             ).model_dump()
         except Exception as exc:
             trace.event("fallback_activated", status="warning", error=type(exc).__name__)
-            answer = self._run_local(query, role, project_code, plan, trace)
+            answer = self._run_local(query, role, project_code, plan, trace, status_callback)
             answer.notice = "OpenAI was unavailable; a deterministic evidence response was used."
             return answer.model_dump()
 
@@ -97,22 +98,26 @@ class MultiAgentOrchestrator:
         project_code: str | None,
         plan: OrchestrationPlan,
         trace: RequestTrace,
+        status_callback: Callable[[str], None] | None = None,
     ) -> AgentAnswer:
         """Run the same specialist boundaries without network calls."""
         database = None
         rag = None
         route: list[str] = []
         if "database_manager" in plan.agents:
+            self._emit_status(status_callback, "checking_database")
             database = self.database.read(query, project_code, role)
             route.append("database_manager")
             trace.event("database_query_completed", agent="database_manager",
                         result_size=len(database.records))
         if "rag" in plan.agents and project_code and self.rag:
+            self._emit_status(status_callback, "checking_database")
             rag = self.rag.retrieve(query, project_code)
             route.append("rag")
             trace.event("rag_retrieval_completed", agent="rag",
                         result_size=len(rag.evidence))
         trace.event("provider_selected", provider="local", model=None, role=role)
+        self._emit_status(status_callback, "creating_response")
         answer = self.writer.fallback(
             WriterInput(query=query, database=database, rag=rag)
         )
@@ -127,6 +132,7 @@ class MultiAgentOrchestrator:
         plan: OrchestrationPlan,
         trace: RequestTrace,
         history: list[dict[str, str]],
+        status_callback: Callable[[str], None] | None = None,
     ) -> AgentAnswer:
         """Use the OpenAI Agents SDK while keeping specialist data access isolated."""
         from agents import Agent, Runner, function_tool
@@ -136,21 +142,26 @@ class MultiAgentOrchestrator:
         @function_tool
         def database_manager(user_query: str) -> str:
             """Read authorized relational project evidence."""
+            self._emit_status(status_callback, "checking_database")
             evidence = self.database.read(user_query, project_code, role)
             route.append("database_manager")
             trace.event("tool_completed", tool_name="database_manager",
                         result_size=len(evidence.records))
+            self._emit_status(status_callback, "creating_response")
             return evidence.model_dump_json()
 
         @function_tool
         def rag_agent(user_query: str) -> str:
             """Retrieve project-scoped PDF evidence."""
+            self._emit_status(status_callback, "checking_database")
             if not project_code or not self.rag:
+                self._emit_status(status_callback, "creating_response")
                 return json.dumps({"evidence": [], "notice": "No project selected"})
             evidence = self.rag.retrieve(user_query, project_code)
             route.append("rag")
             trace.event("tool_completed", tool_name="rag",
                         result_size=len(evidence.evidence))
+            self._emit_status(status_callback, "creating_response")
             return evidence.model_dump_json()
 
         @function_tool
@@ -180,6 +191,8 @@ class MultiAgentOrchestrator:
         )
         trace.event("provider_request_started", provider="openai",
                     model=get_settings().openai_model)
+        if not any(agent in plan.agents for agent in ("database_manager", "rag")):
+            self._emit_status(status_callback, "creating_response")
         result = Runner.run_sync(
             manager,
             [*history, {"role": "user", "content": query}],
@@ -196,3 +209,12 @@ class MultiAgentOrchestrator:
             agent_route=route + ["writer"],
             mode="openai",
         )
+
+    @staticmethod
+    def _emit_status(callback: Callable[[str], None] | None, state: str) -> None:
+        """Report bounded UI progress without allowing observers to break a query."""
+        if callback:
+            try:
+                callback(state)
+            except Exception:
+                pass
