@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Activity, Bell, BookOpen, Bot, BriefcaseBusiness, Building2,
-  ChevronRight, CircleDollarSign, Clock3, LayoutDashboard, Menu,
+  Check, ChevronDown, ChevronRight, CircleDollarSign, Clock3, LayoutDashboard, Menu,
   FileSpreadsheet, FileText, HardHat, Moon, Plus, ReceiptText, RotateCcw,
   Send, Sparkles, Sun, Trash2, TrendingUp, Upload, Users, Wrench, X,
 } from "lucide-react";
@@ -24,10 +24,61 @@ const roles = {
   Admin: "admin",
 };
 
+/** Accessible reusable selector for roles and projects. */
+function SmartSelect({ label, value, options, onChange, icon: Icon, className="", compact=false, disabled=false }) {
+  const [open,setOpen]=useState(false),[activeIndex,setActiveIndex]=useState(0);
+  const rootRef=useRef(null),triggerRef=useRef(null);
+  const selectedIndex=Math.max(0,options.findIndex(option=>option.value===value));
+  const selected=options[selectedIndex]||options[0];
+  useEffect(()=>{
+    if(!open)return;
+    setActiveIndex(selectedIndex);
+    const closeOutside=event=>{if(rootRef.current&&!rootRef.current.contains(event.target))setOpen(false)};
+    const closeEscape=event=>{if(event.key==="Escape"){setOpen(false);triggerRef.current?.focus()}};
+    document.addEventListener("pointerdown",closeOutside,true);document.addEventListener("keydown",closeEscape);
+    return()=>{document.removeEventListener("pointerdown",closeOutside,true);document.removeEventListener("keydown",closeEscape)};
+  },[open,selectedIndex]);
+  function choose(option){onChange(option.value);setOpen(false);triggerRef.current?.focus()}
+  function onKeyDown(event){
+    if(["ArrowDown","ArrowUp","Home","End","Enter"," ","Escape"].includes(event.key))event.preventDefault();
+    if(event.key==="Escape"){setOpen(false);return}
+    if(event.key==="Enter"||event.key===" "){
+      if(open)choose(options[activeIndex]);else setOpen(true);
+      return;
+    }
+    if(event.key==="Home"){setOpen(true);setActiveIndex(0);return}
+    if(event.key==="End"){setOpen(true);setActiveIndex(options.length-1);return}
+    if(event.key==="ArrowDown"){setOpen(true);setActiveIndex(index=>(index+1)%options.length)}
+    if(event.key==="ArrowUp"){setOpen(true);setActiveIndex(index=>(index-1+options.length)%options.length)}
+  }
+  return <div className={`smart-select ${className} ${compact?"compact":""}`} ref={rootRef}>
+    {label&&!compact&&<span className="smart-select-label">{label}</span>}
+    <button type="button" className="smart-select-trigger" ref={triggerRef} disabled={disabled}
+      role="combobox" aria-label={label||"Select an option"} aria-haspopup="listbox" aria-expanded={open}
+      aria-controls={open?`${className}-options`:undefined} aria-activedescendant={open?`${className}-option-${activeIndex}`:undefined}
+      onClick={()=>setOpen(current=>!current)} onKeyDown={onKeyDown}>
+      {Icon&&<Icon size={17}/>}<span className="smart-select-value"><b>{selected?.label}</b>{selected?.description&&<small>{selected.description}</small>}</span>
+      <ChevronDown className="select-chevron" size={16}/>
+    </button>
+    {open&&<div className="smart-select-menu" id={`${className}-options`} role="listbox" aria-label={label||"Options"}>
+      {options.map((option,index)=><button type="button" role="option" tabIndex={-1} aria-selected={option.value===value}
+        id={`${className}-option-${index}`} className={`${option.value===value?"selected":""} ${activeIndex===index?"active":""}`}
+        key={option.value||"all"} onMouseEnter={()=>setActiveIndex(index)} onClick={()=>choose(option)}>
+        <span><b>{option.label}</b>{option.description&&<small>{option.description}</small>}</span>{option.value===value&&<Check size={15}/>}
+      </button>)}
+    </div>}
+  </div>;
+}
+
 const nav = [
   ["assistant", "AI Assistant", Bot],
   ["dashboard", "Command Center", LayoutDashboard],
   ["projects", "Project Explorer", Building2],
+];
+const roleOptions = [
+  {value:"Project Manager",label:"Project Manager"},
+  {value:"Planning Engineer",label:"Planning Engineer"},
+  {value:"Admin",label:"Admin"},
 ];
 
 const money = (value) =>
@@ -100,7 +151,7 @@ function Status({ project }) {
 function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, setRole, refreshProjects, onActivityCleared }) {
   return <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand">
-      <div className="brand-mark"><img src="/prosight-logo.png" alt="ProSight AI logo"/></div>
+      <div className="brand-mark"><img src="/prosight-logo.svg" alt="ProSight AI construction intelligence"/></div>
       {!collapsed && <div><strong>ProSight AI</strong><small>Construction intelligence</small></div>}
     </div>
     <nav>{nav.map(([id, label, Icon]) =>
@@ -111,7 +162,7 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, 
     <div className="sidebar-foot">
       <SidebarUtilities {...{dark,setDark,role,setRole,refreshProjects,onActivityCleared,collapsed}}/>
       <button className="collapse" aria-label={collapsed?"Expand sidebar":"Collapse sidebar"} title={collapsed?"Expand sidebar":"Collapse sidebar"} onClick={() => setCollapsed(!collapsed)}>
-        {collapsed ? <Menu size={18}/> : <X size={18}/>}
+        <Menu size={18}/>
       </button>
     </div>
   </aside>;
@@ -164,11 +215,8 @@ function SidebarUtilities({ dark, setDark, role, setRole, refreshProjects, onAct
     try{await markAllNotificationsRead(roleKey);await refreshCenter()}catch(err){setError(err.message)}
   }
   return <div className="sidebar-utilities">
-    <div className="sidebar-role" title={collapsed?`Current role: ${role}`:undefined}>
-      <Users size={17}/><select aria-label="Current role" value={role} onChange={(e) => setRole(e.target.value)}>
-        {Object.keys(roles).map((item) => <option key={item}>{item}</option>)}
-      </select>
-    </div>
+    <SmartSelect label="Role" value={role} options={roleOptions} onChange={setRole} icon={Users}
+      className="role-select" compact={collapsed}/>
     <div className="utility-actions">
       <div className="notification-center" ref={centerRef}>
         <button className="icon-btn" aria-label="Notifications" aria-expanded={open}
@@ -215,6 +263,15 @@ function Kpi({ icon: Icon, label, value, detail, tone }) {
 
 /** Executive command center assembled from authorized project records. */
 function Dashboard({ projects, goToAssistant }) {
+  const [scheduleRange,setScheduleRange]=useState(6),[rangeOpen,setRangeOpen]=useState(false);
+  const rangeRef=useRef(null);
+  useEffect(()=>{
+    if(!rangeOpen)return;
+    const closeOutside=event=>{if(rangeRef.current&&!rangeRef.current.contains(event.target))setRangeOpen(false)};
+    const closeEscape=event=>{if(event.key==="Escape")setRangeOpen(false)};
+    document.addEventListener("pointerdown",closeOutside,true);document.addEventListener("keydown",closeEscape);
+    return()=>{document.removeEventListener("pointerdown",closeOutside,true);document.removeEventListener("keydown",closeEscape)};
+  },[rangeOpen]);
   const active = projects.filter((p) => p.status === "active");
   const delayed = active.filter((p) => p.delay_days > 0);
   const avg = active.reduce((sum, p) => sum + p.actual_progress, 0) / (active.length || 1);
@@ -225,6 +282,8 @@ function Dashboard({ projects, goToAssistant }) {
   // The prototype dataset contains snapshots rather than full history, so this
   // illustrative trend should be replaced by progress_snapshots in production.
   const trend = [
+    { month: "Nov", Revised: 22, Actual: 20 }, { month: "Dec", Revised: 28, Actual: 25 },
+    { month: "Jan", Revised: 34, Actual: 31 },
     { month: "Feb", Revised: 40, Actual: 38 }, { month: "Mar", Revised: 47, Actual: 45 },
     { month: "Apr", Revised: 55, Actual: 51 }, { month: "May", Revised: 61, Actual: 57 },
     { month: "Jun", Revised: 67, Actual: 63 }, { month: "Jul", Revised: 72, Actual: 68.5 },
@@ -241,7 +300,7 @@ function Dashboard({ projects, goToAssistant }) {
     </section>
     <section className="dashboard-grid">
       <article className="card health-panel">
-        <CardTitle title="Project health" action="View all"/>
+        <CardTitle title="Project health"/>
         <div className="health-head"><span>Project</span><span>Progress</span><span>Status</span></div>
         {active.map((p) => <div className="health-row" key={p.code}>
           <div><strong>{p.name}</strong><small>{p.code}</small></div>
@@ -250,12 +309,22 @@ function Dashboard({ projects, goToAssistant }) {
         </div>)}
       </article>
       <article className="card chart-panel">
-        <CardTitle title="Schedule performance" action="Last 6 months"/>
+        <div className="card-title"><h2>Schedule performance</h2><div className="range-selector" ref={rangeRef}>
+          <button className="range-trigger" aria-haspopup="true" aria-expanded={rangeOpen} onClick={()=>setRangeOpen(open=>!open)}>
+            Last {scheduleRange} months <ChevronDown size={14}/>
+          </button>
+          {rangeOpen&&<div className="range-popover" role="menu" aria-label="Schedule performance period">
+            {[3,6,9].map(months=><button role="menuitemradio" aria-checked={scheduleRange===months} className={scheduleRange===months?"selected":""}
+              key={months} onClick={()=>{setScheduleRange(months);setRangeOpen(false)}}>
+              <span>{months} months</span>{scheduleRange===months&&<Check size={14}/>}
+            </button>)}
+          </div>}
+        </div></div>
         <ResponsiveContainer width="100%" height={260}>
-          <LineChart data={trend}><CartesianGrid strokeDasharray="3 3" vertical={false}/>
-            <XAxis dataKey="month"/><YAxis domain={[30, 80]} unit="%"/><Tooltip/>
-            <Line dataKey="Revised" stroke="#63b3ed" strokeWidth={3} dot={false}/>
-            <Line dataKey="Actual" stroke="#2563eb" strokeWidth={3} dot={{r:3}}/>
+          <LineChart data={trend.slice(-scheduleRange)}><CartesianGrid strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="month"/><YAxis domain={[0, 100]} unit="%"/><Tooltip/>
+            <Line dataKey="Revised" stroke="var(--chart-secondary)" strokeWidth={3} dot={false}/>
+            <Line dataKey="Actual" stroke="var(--chart-primary)" strokeWidth={3} dot={{r:3}}/>
           </LineChart>
         </ResponsiveContainer>
       </article>
@@ -273,7 +342,7 @@ function Dashboard({ projects, goToAssistant }) {
         <ResponsiveContainer width="100%" height={220}><BarChart data={progress} layout="vertical">
           <CartesianGrid strokeDasharray="3 3" horizontal={false}/><XAxis type="number" domain={[0,100]}/>
           <YAxis dataKey="name" type="category" width={105}/><Tooltip/><Legend/>
-          <Bar dataKey="Baseline" fill="#cbd5e1" radius={4}/><Bar dataKey="Revised" fill="#60a5fa" radius={4}/><Bar dataKey="Actual" fill="#2563eb" radius={4}/>
+          <Bar dataKey="Baseline" fill="var(--chart-muted)" radius={4}/><Bar dataKey="Revised" fill="var(--chart-secondary)" radius={4}/><Bar dataKey="Actual" fill="var(--chart-primary)" radius={4}/>
         </BarChart></ResponsiveContainer>
       </article>
       <article className="card"><CardTitle title="Upcoming milestones"/>
@@ -304,6 +373,7 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
   const [portfolioManpower,setPortfolioManpower]=useState([]),[invoices,setInvoices]=useState([]),[pivot,setPivot]=useState([]),[schedule,setSchedule]=useState([]);
   const project = projects.find((p)=>p.code===selected) || projects[0];
   const roleKey=roles[role];
+  const projectOptions=projects.map(item=>({value:item.code,label:item.code,description:item.name}));
   useEffect(()=>{
     if(projects.length&&!projects.some(item=>item.code===selected))setSelected(projects[0].code);
   },[projects,selected]);
@@ -319,9 +389,8 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
   return <>
     <PageTitle eyebrow="Project controls" title="Project Explorer" subtitle="Inspect schedules, teams, site operations, and supporting evidence.">
       <div className="project-title-actions">
-        <select className="project-select" value={project.code} onChange={(e)=>setSelected(e.target.value)}>
-          {projects.map((p)=><option key={p.code} value={p.code}>{p.code} — {p.name}</option>)}
-        </select>
+        <SmartSelect label="Selected project" value={project.code} options={projectOptions} onChange={setSelected}
+          icon={Building2} className="explorer-project-select"/>
         <button className="primary create-project-action" onClick={()=>setPortfolioOpen(true)}>
           <FileSpreadsheet size={16}/> Portfolio Import
         </button>
@@ -757,16 +826,14 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
   const quickPrompts=selected
     ? [`Why is ${selected.code} delayed?`,`Show outstanding invoices for ${selected.code}`,`Compare planned and actual manpower for ${selected.code}`]
     : ["Which active projects are delayed?","Show portfolio invoice risks","Where is manpower under-allocated?"];
+  const contextOptions=[{value:"",label:"All projects",description:"Portfolio-wide context"},
+    ...projects.map(project=>({value:project.code,label:project.code,description:project.name}))];
   return <div className="assistant-page">
     <PageTitle eyebrow="Multi-agent project intelligence" title="AI Project Assistant" subtitle="Ask about structured project data or evidence from uploaded reports.">
       <div className="assistant-title-actions">
-        <label className="context-selector"><span>Analysis context</span>
-          <select value={selectedProject} onChange={event=>setSelectedProject(event.target.value)}>
-            <option value="">All projects</option>
-            {projects.map(project=><option value={project.code} key={project.code}>{project.code} — {project.name}</option>)}
-          </select>
-        </label>
-        <button className="new-chat-action" aria-label="Start a new chat" title="Start a new chat" disabled={loading} onClick={clearMessages}><RotateCcw size={15}/> New chat</button>
+        <SmartSelect label="Analysis context" value={selectedProject} options={contextOptions} onChange={setSelectedProject}
+          icon={Building2} className="assistant-project-select"/>
+        <button className="new-chat-action primary" aria-label="Start a new chat" title="Start a new chat" disabled={loading} onClick={clearMessages}><RotateCcw size={15}/> New chat</button>
       </div>
     </PageTitle>
     <div className="suggestions">{quickPrompts.map(item=><button key={item} onClick={()=>submit(item)}>{item}</button>)}</div>
