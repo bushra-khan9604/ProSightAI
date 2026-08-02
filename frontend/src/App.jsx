@@ -497,6 +497,7 @@ function PortfolioImport({open,onClose,roleKey,onImported,projects,selectedProje
     {dataset:"schedule",title:"Project Schedule",description:"Project activities, dates and original durations"},
   ];
   const item=options.find(option=>option.dataset===dataset)||options[0];
+  const datasetOptions=options.map(option=>({value:option.dataset,label:option.title,description:option.description}));
   function selectDataset(value){setDataset(value);setFeedback(null);setSelectedFile("")}
   if(!open)return null;
   return <div className="upload-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget&&!loading)onClose()}}>
@@ -504,8 +505,8 @@ function PortfolioImport({open,onClose,roleKey,onImported,projects,selectedProje
       <div className="upload-head"><div><span>PORTFOLIO CONTROLS</span><h2>Portfolio Data Import</h2></div>
         <button disabled={loading} onClick={onClose}><X/></button></div>
       <p className="portfolio-help">Choose one portfolio dataset, download its template, then upload the completed XLSX workbook.</p>
-      <label className="portfolio-dataset-select"><span>Data to import</span><select value={dataset} disabled={loading} onChange={event=>selectDataset(event.target.value)}>
-        {options.map(option=><option value={option.dataset} key={option.dataset}>{option.title}</option>)}</select></label>
+      <SmartSelect className="portfolio-dataset-smart" label="Data to import" Icon={FileSpreadsheet}
+        value={dataset} options={datasetOptions} disabled={loading} onChange={selectDataset}/>
       <div className="portfolio-upload-grid"><section className={`portfolio-upload-option ${activeDataset===item.dataset?"active":""}`}>
         <div className="portfolio-card-heading"><i><FileSpreadsheet size={20}/></i><div><h3>{item.title}</h3><p>{item.description}</p></div></div>
         <a className="template-download" href={portfolioTemplateUrl(roleKey,item.dataset)} aria-disabled={loading}
@@ -885,7 +886,7 @@ export default function App(){
   const [role,setRole]=useState("Project Manager"),[projects,setProjects]=useState([]),[loading,setLoading]=useState(true);
   const [collapsed,setCollapsed]=useState(false),[initialQuery,setInitialQuery]=useState("");
   const [messages,setMessages]=useState(initialMessages),[dataRevision,setDataRevision]=useState(0);
-  const [selectedProject,setSelectedProject]=useState("");
+  const [assistantProject,setAssistantProject]=useState(""),[explorerProject,setExplorerProject]=useState("");
   // Theme preference is local to the browser and does not affect server data.
   useEffect(()=>{document.documentElement.dataset.theme=dark?"dark":"light";localStorage.theme=dark?"dark":"light"},[dark]);
   // Changing roles refetches data so contact masking is enforced by Python.
@@ -903,15 +904,15 @@ export default function App(){
   function goToAssistant(q){setInitialQuery(q);setPage("assistant")}
   return <div className="app-shell"><Sidebar {...{page,setPage,collapsed,setCollapsed,dark,setDark,refreshProjects}}
     onActivityCleared={activityCleared}
-    role={role} setRole={nextRole=>{setRole(nextRole);setMessages(initialMessages());setSelectedProject("")}}/><div className="main-shell">
+    role={role} setRole={nextRole=>{setRole(nextRole);setMessages(initialMessages());setAssistantProject("")}}/><div className="main-shell">
     <main className={loading?"loading":""}>
       {loading?<div className="loader"><i/></div>:<>
       {page==="dashboard"&&<Dashboard projects={projects} goToAssistant={goToAssistant}/>}
       {page==="projects"&&<ProjectExplorer projects={projects} role={role}
         refreshProjects={refreshProjects} dataRevision={dataRevision}
-        selectedProject={selectedProject} setSelectedProject={setSelectedProject}/>}
+        selectedProject={explorerProject} setSelectedProject={setExplorerProject}/>}
       {page==="assistant"&&<Assistant role={role} projects={projects} initialQuery={initialQuery} clearInitial={()=>setInitialQuery("")}
         messages={messages} setMessages={setMessages} clearMessages={()=>setMessages(initialMessages())}
-        selectedProject={selectedProject} setSelectedProject={setSelectedProject}/>}
+        selectedProject={assistantProject} setSelectedProject={setAssistantProject}/>}
       </>}</main></div></div>;
 }

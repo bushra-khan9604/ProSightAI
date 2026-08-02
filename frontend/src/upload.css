@@ -129,6 +129,42 @@
 .drop-zone input {
   width: 100%;
   font-size: 10px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.drop-zone input[type="file"]::file-selector-button,
+.project-excel-drop input[type="file"]::file-selector-button {
+  min-height: 36px;
+  margin-right: 10px;
+  padding: 0 14px;
+  border: 1px solid var(--primary);
+  border-radius: 9px;
+  color: #fff;
+  background: var(--primary);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--primary) 18%, transparent);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background-color .18s var(--ease), border-color .18s var(--ease), box-shadow .18s var(--ease), transform .18s var(--ease);
+}
+
+.drop-zone input[type="file"]::file-selector-button:hover,
+.project-excel-drop input[type="file"]::file-selector-button:hover {
+  border-color: var(--primary-hover);
+  background: var(--primary-hover);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--primary) 26%, transparent);
+}
+
+.drop-zone input[type="file"]:focus-visible,
+.project-excel-drop input[type="file"]:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--primary) 28%, transparent);
+  outline-offset: 3px;
+}
+
+:root[data-theme="dark"] .drop-zone input[type="file"]::file-selector-button,
+:root[data-theme="dark"] .project-excel-drop input[type="file"]::file-selector-button {
+  color: #03045a;
 }
 
 .drop-zone span,
@@ -249,7 +285,9 @@
 
 .project-excel-drop input {
   width: 100%;
+  color: var(--muted);
   font-size: 9px;
+  cursor: pointer;
 }
 
 .import-counts {
