@@ -164,7 +164,7 @@
 
 :root[data-theme="dark"] .drop-zone input[type="file"]::file-selector-button,
 :root[data-theme="dark"] .project-excel-drop input[type="file"]::file-selector-button {
-  color: #03045a;
+  color: #fff;
 }
 
 .drop-zone span,
