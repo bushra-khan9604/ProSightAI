@@ -52,7 +52,7 @@ class QueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=10_000)
     user_role: str = "project_manager"
     project_code: str | None = None
-    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
+    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=10)
 
 
 class ProjectDraft(BaseModel):

@@ -773,7 +773,7 @@ function LegacyAssistant({ role, projects, initialQuery, clearInitial, messages,
     forceScrollRef.current=true;setMessages(m=>[...m,{role:"user",content:text}]);setQuery("");setLoading(true);
     // The backend returns either OpenAI application mode or local test/data mode.
     const history=messages.filter(message=>["user","assistant"].includes(message.role)&&!message.error&&!message.intro)
-      .slice(-20).map(({role,content})=>({role,content}));
+      .slice(-10).map(({role,content})=>({role,content}));
     try{const result=await askAgent(text,roles[role],selectedProject||null,history);
       console.info("prosight.response_rendered",{request_id:result.request_id,provider:result.mode,duration_ms:result.duration_ms});
       setMessages(m=>[...m,{role:"assistant",content:result.answer,citations:result.citations,route:result.agent_route,mode:result.mode,notice:result.notice,requestId:result.request_id,durationMs:result.duration_ms}]);}
@@ -825,7 +825,7 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
     setMessages(current=>[...current,{role:"user",content:text},{role:"assistant",content:"Thinking",pending:true,id:assistantId}]);
     setQuery("");setLoading(true);
     const history=messages.filter(message=>["user","assistant"].includes(message.role)&&!message.error&&!message.intro)
-      .slice(-20).map(({role:messageRole,content})=>({role:messageRole,content}));
+      .slice(-10).map(({role:messageRole,content})=>({role:messageRole,content}));
     try{
       const result=await askAgentStream(text,roles[role],selectedProject||null,history,{
         onStatus:status=>setMessages(current=>current.map(message=>message.id===assistantId?{...message,content:status}:message)),

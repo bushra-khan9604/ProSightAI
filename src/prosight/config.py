@@ -5,10 +5,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = ROOT / ".env"
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 
 def load_env_file(path: Path = DEFAULT_ENV_FILE) -> None:
@@ -33,7 +36,18 @@ class Settings:
     ai_provider: str
     openai_api_key: str
     openai_model: str
+    orchestrator_reasoning: ReasoningEffort
+    writer_reasoning: ReasoningEffort
     embedding_model: str
+
+
+def _reasoning_effort(name: str, default: ReasoningEffort) -> ReasoningEffort:
+    """Return a validated reasoning effort from one environment setting."""
+    value = os.environ.get(name, default).strip().lower()
+    if value not in REASONING_EFFORTS:
+        supported = ", ".join(sorted(REASONING_EFFORTS))
+        raise ValueError(f"{name} must be one of: {supported}")
+    return value  # type: ignore[return-value]
 
 
 def get_settings() -> Settings:
@@ -43,5 +57,7 @@ def get_settings() -> Settings:
         ai_provider=os.environ.get("PROSIGHT_AI_PROVIDER", "auto").lower(),
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
         openai_model=os.environ.get("OPENAI_MODEL", "gpt-5.6-luna"),
+        orchestrator_reasoning=_reasoning_effort("OPENAI_ORCHESTRATOR_REASONING", "none"),
+        writer_reasoning=_reasoning_effort("OPENAI_WRITER_REASONING", "low"),
         embedding_model=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
     )

@@ -136,8 +136,11 @@ class MultiAgentOrchestrator:
     ) -> AgentAnswer:
         """Use the OpenAI Agents SDK while keeping specialist data access isolated."""
         from agents import Agent, Runner, function_tool
+        from agents.model_settings import ModelSettings
+        from openai.types.shared import Reasoning
 
         route: list[str] = []
+        settings = get_settings()
 
         @function_tool
         def database_manager(user_query: str) -> str:
@@ -177,20 +180,26 @@ class MultiAgentOrchestrator:
         writer_agent = Agent(
             name="Writer Agent",
             instructions=WRITER_INSTRUCTIONS,
-            model=get_settings().openai_model,
+            model=settings.openai_model,
+            model_settings=ModelSettings(
+                reasoning=Reasoning(effort=settings.writer_reasoning)
+            ),
             tools=[create_table],
         )
         manager = Agent(
             name=self.name,
             instructions=ORCHESTRATOR_INSTRUCTIONS,
-            model=get_settings().openai_model,
+            model=settings.openai_model,
+            model_settings=ModelSettings(
+                reasoning=Reasoning(effort=settings.orchestrator_reasoning)
+            ),
             tools=[database_manager, rag_agent, writer_agent.as_tool(
                 tool_name="writer_agent",
                 tool_description="Create the final evidence-grounded response.",
             )],
         )
         trace.event("provider_request_started", provider="openai",
-                    model=get_settings().openai_model)
+                    model=settings.openai_model)
         if not any(agent in plan.agents for agent in ("database_manager", "rag")):
             self._emit_status(status_callback, "creating_response")
         result = Runner.run_sync(

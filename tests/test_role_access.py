@@ -97,7 +97,11 @@ class RoleAccessTests(unittest.TestCase):
         with patch.dict("os.environ", {"PROSIGHT_AI_PROVIDER": "local"}):
             response = self.client.post(
                 "/api/query/stream",
-                json={"query": "List active projects", "history": [],
+                json={"query": "List active projects", "history": [
+                          {"role": "user" if index % 2 == 0 else "assistant",
+                           "content": f"context message {index}"}
+                          for index in range(10)
+                      ],
                       "user_role": "project_manager", "project_code": None},
             )
         self.assertEqual(200, response.status_code)
@@ -116,14 +120,15 @@ class RoleAccessTests(unittest.TestCase):
                 "query": "What about its milestones?",
                 "user_role": "project_manager",
                 "history": [
-                    {"role": "user", "content": "Show Marina Heights"},
-                    {"role": "assistant", "content": "Marina Heights is active."},
+                    {"role": "user" if index % 2 == 0 else "assistant",
+                     "content": f"context message {index}"}
+                    for index in range(10)
                 ],
             },
         )
         self.assertEqual(200, response.status_code)
 
-    def test_query_rejects_system_history_and_more_than_twenty_messages(self):
+    def test_query_rejects_system_history_and_more_than_ten_messages(self):
         system = self.client.post(
             "/api/query",
             json={
@@ -140,11 +145,24 @@ class RoleAccessTests(unittest.TestCase):
                 "user_role": "project_manager",
                 "history": [
                     {"role": "user", "content": f"message {index}"}
-                    for index in range(21)
+                    for index in range(11)
                 ],
             },
         )
         self.assertEqual(422, too_many.status_code)
+
+        streamed = self.client.post(
+            "/api/query/stream",
+            json={
+                "query": "Hello",
+                "user_role": "project_manager",
+                "history": [
+                    {"role": "user", "content": f"message {index}"}
+                    for index in range(11)
+                ],
+            },
+        )
+        self.assertEqual(422, streamed.status_code)
 
     def test_planning_engineer_can_upload_pdf_and_xlsx(self):
         for filename, content_type, content in (

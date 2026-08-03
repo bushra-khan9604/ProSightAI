@@ -5,9 +5,12 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from prosight.agents.database_manager import DatabaseManagerAgent
 from prosight.agents.orchestrator import MultiAgentOrchestrator
+from prosight.config import get_settings
 from prosight.contracts import ChangeOperation, EvidenceItem, RAGEvidence
 from prosight.observability import RequestTrace
 from prosight.repository import DEFAULT_DATA, ProjectRepository
@@ -68,6 +71,53 @@ class MultiAgentTests(unittest.TestCase):
         self.assertIn("rag", result["agent_route"])
         self.assertIn("writer", result["agent_route"])
         self.assertIn("Monthly Report.pdf, page 14", result["citations"])
+
+    def test_hosted_agents_use_separate_explicit_reasoning_levels(self):
+        created_agents = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                created_agents.append(self)
+
+            def as_tool(self, **kwargs):
+                return {"agent": self, **kwargs}
+
+        plan = self.orchestrator.plan("Explain project progress", "PRJ-2024-001")
+        with (
+            patch("agents.Agent", FakeAgent),
+            patch("agents.function_tool", side_effect=lambda function: function),
+            patch(
+                "agents.Runner.run_sync",
+                return_value=SimpleNamespace(final_output="Evidence-grounded response"),
+            ),
+            patch.dict(
+                "os.environ",
+                {
+                    "OPENAI_MODEL": "gpt-5.6-luna",
+                    "OPENAI_ORCHESTRATOR_REASONING": "none",
+                    "OPENAI_WRITER_REASONING": "low",
+                },
+                clear=False,
+            ),
+        ):
+            self.orchestrator._run_openai(
+                "Explain project progress", "project_manager", "PRJ-2024-001",
+                plan, RequestTrace(), [],
+            )
+
+        writer, manager = created_agents
+        self.assertEqual("gpt-5.6-luna", writer.kwargs["model"])
+        self.assertEqual("low", writer.kwargs["model_settings"].reasoning.effort)
+        self.assertEqual("gpt-5.6-luna", manager.kwargs["model"])
+        self.assertEqual("none", manager.kwargs["model_settings"].reasoning.effort)
+
+    def test_reasoning_configuration_rejects_unknown_effort(self):
+        with patch.dict(
+            "os.environ", {"OPENAI_WRITER_REASONING": "unsupported"}, clear=False
+        ):
+            with self.assertRaisesRegex(ValueError, "OPENAI_WRITER_REASONING"):
+                get_settings()
 
     def test_database_manager_creates_pending_change(self):
         evidence = DatabaseManagerAgent(self.repository).propose_change(
