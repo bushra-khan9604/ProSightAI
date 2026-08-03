@@ -514,6 +514,47 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         return runtime.repository.list_jobs(project_code)
 
+    @app.delete("/api/ingestion-jobs/{job_id}")
+    def clear_failed_ingestion_job(job_id: str, role: str = Query(...)) -> dict:
+        """Permanently clear one failed upload after project and role authorization."""
+        _validate_role(role)
+        _require_role(
+            role, {"project_manager", "planning_engineer", "admin"},
+            "This role cannot clear failed ingestion jobs",
+        )
+        job = runtime.repository.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Ingestion job not found")
+        if job["status"] != "failed":
+            raise HTTPException(status_code=409, detail="Only failed ingestion jobs can be cleared")
+        document = runtime.repository.get_document(job["document_id"])
+        if not document or not runtime.repository.find_project(document["project_code"], role):
+            raise HTTPException(status_code=404, detail="Project not found or unauthorized")
+        if job.get("change_request_id"):
+            change = runtime.repository.get_change_request(job["change_request_id"])
+            if change and change["status"] == "pending":
+                raise HTTPException(
+                    status_code=409,
+                    detail="This failed job still has an unresolved change request",
+                )
+        if not runtime.ingestion:
+            raise HTTPException(status_code=503, detail="Ingestion runtime unavailable")
+        try:
+            return runtime.ingestion.clear_failed_job(job_id, role)
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error).strip("'")) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except Exception as error:
+            logging.getLogger("prosight.ingestion").exception(
+                "failed_ingestion_cleanup_failed", extra={"job_id": job_id}
+            )
+            raise HTTPException(
+                status_code=500, detail="The failed upload could not be cleared"
+            ) from error
+
     @app.post("/api/portfolio-imports")
     def portfolio_import(
         role: str = Form(...), dataset: str = Form("combined"),

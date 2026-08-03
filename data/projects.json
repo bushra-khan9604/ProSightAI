@@ -74,13 +74,16 @@
       "actual_progress": 100.0,
       "contacts": [
         {"name": "Nadia Qureshi", "project_role": "Project Manager", "email": "nadia.q@example.com", "mobile": "+971-50-555-0301"},
-        {"name": "Ravi Menon", "project_role": "Project Engineer", "email": "ravi.m@example.com", "mobile": "+971-50-555-0302"}
+        {"name": "Ravi Menon", "project_role": "Project Engineer", "email": "ravi.m@example.com", "mobile": "+971-50-555-0302"},
+        {"name": "Sameer Iqbal", "project_role": "Planning Engineer", "email": "sameer.iqbal@example.com", "mobile": "+971-50-555-0303"},
+        {"name": "Leena D'Souza", "project_role": "Handover Engineer", "email": "leena.dsouza@example.com", "mobile": "+971-50-555-0304"},
+        {"name": "Faisal Al Marri", "project_role": "Client Point of Contact", "email": "faisal.alm@example-client.com", "mobile": "+971-50-555-0305"}
       ],
-      "activities": ["Defects liability monitoring"],
-      "manpower": [{"designation": "Facilities technicians", "count": 4}],
-      "equipment": [{"type": "Service vehicles", "count": 2}],
+      "activities": ["Defects liability monitoring", "Final account closeout", "Warranty documentation handover", "As-built records archive verification"],
+      "manpower": [{"designation": "Facilities technicians", "count": 4}, {"designation": "Defect rectification crew", "count": 8}, {"designation": "MEP technicians", "count": 5}, {"designation": "Document controllers", "count": 2}, {"designation": "Supervisors", "count": 2}],
+      "equipment": [{"type": "Service vehicles", "count": 2}, {"type": "Boom lifts", "count": 1}, {"type": "Portable generators", "count": 2}, {"type": "Testing and commissioning kits", "count": 4}, {"type": "Material handling forklifts", "count": 2}],
       "total_manhours": 2194300,
-      "milestones": [{"name": "Practical completion", "status": "complete"}, {"name": "Final handover", "status": "complete"}],
+      "milestones": [{"name": "Site mobilization", "status": "complete"}, {"name": "Warehouse structure", "status": "complete"}, {"name": "MEP commissioning", "status": "complete"}, {"name": "Practical completion", "status": "complete"}, {"name": "Final handover", "status": "complete"}],
       "sources": ["Project Completion Report PCR-01", "As-built Handover Index, rev 2", "Final Account Certificate"]
     },
     {
@@ -99,13 +102,16 @@
       "actual_progress": 0.0,
       "contacts": [
         {"name": "Khalid Mansoor", "project_role": "Bid Manager", "email": "khalid.m@example.com", "mobile": "+971-50-555-0401"},
-        {"name": "Elena Petrova", "project_role": "Planning Engineer", "email": "elena.p@example.com", "mobile": "+971-50-555-0402"}
+        {"name": "Elena Petrova", "project_role": "Planning Engineer", "email": "elena.p@example.com", "mobile": "+971-50-555-0402"},
+        {"name": "Ahmed Al Suwaidi", "project_role": "Design Manager", "email": "ahmed.suwaidi@example.com", "mobile": "+971-50-555-0403"},
+        {"name": "Priya Nair", "project_role": "Commercial Manager", "email": "priya.nair@example.com", "mobile": "+971-50-555-0404"},
+        {"name": "Noor Al Hashimi", "project_role": "Client Point of Contact", "email": "noor.hashimi@example-client.com", "mobile": "+971-50-555-0405"}
       ],
-      "activities": ["Tender design review", "Construction methodology", "Resource histogram preparation"],
+      "activities": ["Tender design review", "Construction methodology", "Resource histogram preparation", "Commercial bid consolidation"],
       "manpower": [{"designation": "Bid team", "count": 18}],
-      "equipment": [{"type": "TBM allowance", "count": 2}],
+      "equipment": [{"type": "TBM allowance", "count": 2}, {"type": "Segment handling gantries", "count": 2}, {"type": "Slurry treatment plant", "count": 1}, {"type": "Mobile cranes", "count": 4}, {"type": "Survey equipment sets", "count": 3}],
       "total_manhours": 12800,
-      "milestones": [{"name": "Technical submission", "status": "due 2026-09-10"}, {"name": "Commercial submission", "status": "due 2026-09-17"}, {"name": "Notice of award", "status": "forecast 2027-01-20"}],
+      "milestones": [{"name": "Prequalification approval", "status": "complete"}, {"name": "Technical submission", "status": "due 2026-09-10"}, {"name": "Commercial submission", "status": "due 2026-09-17"}, {"name": "Tender clarification closeout", "status": "forecast 2026-11-15"}, {"name": "Notice of award", "status": "forecast 2027-01-20"}],
       "sources": ["Invitation to Tender ITT-C-01", "Tender Programme TP-03, working draft", "Bid Team Register 2026-07-15"]
     }
   ]

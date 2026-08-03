@@ -116,6 +116,18 @@ export async function getProjectSchedule(role, projectCode) {
   return response.json();
 }
 
+export async function clearFailedIngestionJob(jobId, role) {
+  const response = await fetch(`/api/ingestion-jobs/${encodeURIComponent(jobId)}?role=${encodeURIComponent(role)}`, {
+    method: "DELETE",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = payload.detail;
+    throw new Error(typeof detail === "string" ? detail : detail?.message || "Could not clear failed upload");
+  }
+  return payload;
+}
+
 export async function getPortfolioManpower(role, projectCode = "") {
   const query = new URLSearchParams({ role });
   if (projectCode) query.set("project_code", projectCode);

@@ -41,8 +41,9 @@ body{font-size:var(--font-body);line-height:1.55}.page-title h1{font-size:var(--
 .smart-select-value{display:block;min-width:0;flex:1}.smart-select-value b,.smart-select-value small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.smart-select-value b{font-size:12px}.smart-select-value small{margin-top:2px;color:var(--muted);font-size:9px}.smart-select-trigger .select-chevron{flex:none;transition:transform .18s var(--ease)}.smart-select-trigger[aria-expanded="true"] .select-chevron{transform:rotate(180deg)}
 .smart-select-menu{position:absolute;z-index:80;top:calc(100% + 7px);right:0;width:max(100%,280px);max-height:260px;overflow:auto;padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-float);animation:popoverIn .16s var(--ease)}
 .smart-select-menu button{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:46px;padding:7px 9px;border:0;border-radius:8px;color:var(--text);background:transparent;text-align:left;cursor:pointer}.smart-select-menu button:hover,.smart-select-menu button.active{background:var(--surface2)}.smart-select-menu button.selected{color:var(--primary);background:var(--primary-soft)}.smart-select-menu button span{min-width:0}.smart-select-menu b,.smart-select-menu small{display:block}.smart-select-menu b{font-size:11px}.smart-select-menu small{margin-top:2px;color:var(--muted);font-size:9px}.smart-select-menu svg{flex:none}
-.role-select .smart-select-trigger{color:#0f172a;background:#fff;border-color:#d9e7f5}.role-select .smart-select-menu{top:auto;right:auto;bottom:calc(100% + 8px);left:0;width:220px}.role-select.compact .smart-select-trigger{width:42px;min-height:42px;padding:0;justify-content:center}.role-select.compact .smart-select-value,.role-select.compact .select-chevron{display:none}.role-select.compact .smart-select-menu{left:calc(100% + 12px);bottom:0}
+.role-select .smart-select-trigger{color:#023c85;background:#fff;border-color:#d9e7f5}.role-select .smart-select-menu{top:auto;right:auto;bottom:calc(100% + 8px);left:0;width:220px}.role-select .smart-select-menu button,.role-select .smart-select-menu button b,.role-select .smart-select-menu button small{color:#023c85}.role-select.compact .smart-select-trigger{width:42px;min-height:42px;padding:0;justify-content:center}.role-select.compact .smart-select-value,.role-select.compact .select-chevron{display:none}.role-select.compact .smart-select-menu{left:calc(100% + 12px);bottom:0}
 :root[data-theme="dark"] .role-select .smart-select-trigger{color:#f8fafc;background:#13284f;border-color:#27497b}
+:root[data-theme="dark"] .role-select .smart-select-menu button,:root[data-theme="dark"] .role-select .smart-select-menu button b,:root[data-theme="dark"] .role-select .smart-select-menu button small{color:#f8fafc}
 .assistant-project-select{width:320px;max-width:34vw;flex:1}.assistant-project-select .smart-select-trigger{height:42px;min-height:42px}.explorer-project-select{width:340px;max-width:36vw}
 .portfolio-dataset-smart{width:100%;margin:14px 0}.portfolio-dataset-smart .smart-select-trigger{min-height:48px;background:var(--surface)}.portfolio-dataset-smart .smart-select-menu{right:auto;left:0;width:100%}
 
@@ -65,6 +66,66 @@ body{font-size:var(--font-body);line-height:1.55}.page-title h1{font-size:var(--
 .notification-item.unread{background:color-mix(in srgb,var(--primary) 8%,transparent)}.notification-item.unread:before{background:var(--accent)}
 .project-excel-drop,.drop-zone{border-color:color-mix(in srgb,var(--primary) 55%,var(--line));background:var(--primary-soft)}
 .project-submit{color:#fff;background:var(--primary)}.project-submit:hover:not(:disabled){background:var(--primary-hover)}
+
+/* High-contrast selection and icon treatment for dark surfaces. */
+:root[data-theme="dark"] .smart-select-menu button.selected,
+:root[data-theme="dark"] .smart-select-menu button.selected b,
+:root[data-theme="dark"] .smart-select-menu button.selected small,
+:root[data-theme="dark"] .tabs button.active,
+:root[data-theme="dark"] .range-popover button.selected{
+  color:#f8fafc;
+}
+:root[data-theme="dark"] .smart-select-menu button.selected,
+:root[data-theme="dark"] .tabs button.active{
+  background:#023c85;
+}
+:root[data-theme="dark"] select{color:#f8fafc;background:#13284f}
+:root[data-theme="dark"] select option{color:#f8fafc;background:#13284f}
+:root[data-theme="dark"] select option:checked{color:#f8fafc;background:#023c85}
+:root[data-theme="dark"] :where(
+  button,
+  .avatar,
+  .assistant-orb,
+  .kpi-icon,
+  .portfolio-card-heading>i,
+  .project-excel-drop,
+  .drop-zone,
+  .document-row,
+  .evidence,
+  .list-row,
+  .spark,
+  .smart-select-trigger,
+  .smart-select-menu button
+) svg{
+  color:#f8fafc;
+  stroke:#f8fafc;
+}
+:root[data-theme="dark"] .page-title>div>span,
+:root[data-theme="dark"] .welcome-copy>span,
+:root[data-theme="dark"] .composer-context span,
+:root[data-theme="dark"] .spark,
+:root[data-theme="dark"] .range-trigger,
+:root[data-theme="dark"] .upload-head span,
+:root[data-theme="dark"] .template-download{
+  color:#f8fafc!important;
+}
+:root[data-theme="dark"] .template-download svg{
+  color:#f8fafc;
+  stroke:#f8fafc;
+}
+:root[data-theme="dark"] *{
+  scrollbar-color:#57c7ff transparent;
+}
+:root[data-theme="dark"] *::-webkit-scrollbar-thumb,
+:root[data-theme="dark"] .composer textarea::-webkit-scrollbar-thumb{
+  background:#57c7ff;
+  background-clip:padding-box;
+}
+:root[data-theme="dark"] *::-webkit-scrollbar-thumb:hover,
+:root[data-theme="dark"] .composer textarea::-webkit-scrollbar-thumb:hover{
+  background:#8bd9ff;
+  background-clip:padding-box;
+}
 
 @media(max-width:900px){.page-title{align-items:flex-start;flex-direction:column}.project-title-actions{width:100%;padding-top:0;justify-content:flex-start;flex-wrap:wrap}.assistant-project-select,.explorer-project-select{width:100%;max-width:none}.project-title-actions .explorer-project-select{flex-basis:100%}}
 @media(max-width:760px){:root{--font-page:27px}.project-title-actions .create-project-action{flex:1}.sidebar .brand,.sidebar.collapsed .brand{padding-left:0;padding-right:0;justify-content:center}.brand-mark{width:48px;height:48px}}

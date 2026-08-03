@@ -178,6 +178,7 @@
 .job-row small{display:block;color:var(--muted);font-size:10px;margin-top:3px}
 .job-row.failed{border-color:#ef444455;background:#ef44440a}
 .job-row.failed b{color:#dc2626}
+.job-clear{display:inline-flex;align-items:center;gap:5px;flex:none;padding:6px 9px;border:1px solid #dc262655;border-radius:7px;color:#dc2626;background:transparent;font-size:10px;font-weight:800;cursor:pointer}.job-clear:hover:not(:disabled){color:#fff;background:#dc2626;border-color:#dc2626}.job-clear:disabled{opacity:.55;cursor:wait}.job-clear-error{color:#dc2626!important;font-weight:700}
 
 .upload-center h3 {
   margin: 24px 0 10px;

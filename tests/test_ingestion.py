@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from openpyxl import Workbook
 from reportlab.pdfgen import canvas
 
 from prosight.ingestion.excel import PROJECT_COLUMNS, preview_workbook
+from prosight.ingestion.manager import IngestionManager
 from prosight.ingestion.pdf import detect_reporting_date
 from prosight.rag.store import RAGStore
 from prosight.repository import DEFAULT_DATA, ProjectRepository
@@ -76,6 +78,79 @@ class IngestionTests(unittest.TestCase):
             jobs = repository.list_jobs("PRJ-2024-001")
             self.assertEqual("failed", jobs[0]["status"])
             self.assertEqual("Workbook is malformed", jobs[0]["message"])
+
+    def test_failed_job_cleanup_removes_artifacts_and_writes_audit(self):
+        class FakeStore:
+            def __init__(self):
+                self.deleted = []
+
+            def delete_document(self, document_id):
+                self.deleted.append(document_id)
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = ProjectRepository(root / "test.db")
+            repository.initialize(DEFAULT_DATA)
+            stored = root / "broken.pdf"
+            stored.write_bytes(b"%PDF-broken")
+            document = repository.create_document(
+                "PRJ-2024-001", "broken.pdf", "pdf", "cleanup-checksum", str(stored)
+            )
+            job = repository.create_job(document["id"])
+            repository.update_document_status(document["id"], "failed")
+            repository.update_job(job["id"], "failed", 100, "PDF parsing failed")
+            store = FakeStore()
+            manager = IngestionManager(repository, store, root / "uploads")
+            try:
+                cleared = manager.clear_failed_job(job["id"], "project_manager")
+            finally:
+                manager.close()
+            self.assertEqual(job["id"], cleared["job_id"])
+            self.assertEqual([document["id"]], store.deleted)
+            self.assertFalse(stored.exists())
+            self.assertIsNone(repository.get_job(job["id"]))
+            self.assertIsNone(repository.get_document(document["id"]))
+            with closing(repository.connect()) as db:
+                audit = db.execute(
+                    "SELECT * FROM audit_events WHERE action='failed_ingestion_cleared'"
+                ).fetchone()
+            self.assertIsNotNone(audit)
+            self.assertNotIn("stored_path", audit["before_json"])
+
+    def test_nonfailed_job_cannot_be_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ProjectRepository(Path(directory) / "test.db")
+            repository.initialize(DEFAULT_DATA)
+            document = repository.create_document(
+                "PRJ-2024-001", "queued.xlsx", "xlsx", "queued-checksum", "queued.xlsx"
+            )
+            job = repository.create_job(document["id"])
+            with self.assertRaisesRegex(ValueError, "Only failed"):
+                repository.delete_failed_ingestion_records(job["id"], "admin")
+            self.assertIsNotNone(repository.get_job(job["id"]))
+
+    def test_failed_job_with_pending_change_cannot_be_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ProjectRepository(Path(directory) / "test.db")
+            repository.initialize(DEFAULT_DATA)
+            document = repository.create_document(
+                "PRJ-2024-001", "pending.xlsx", "xlsx", "pending-checksum", "pending.xlsx"
+            )
+            job = repository.create_job(document["id"])
+            change = repository.create_change_request(
+                "excel_import", "PRJ-2024-001", {"projects": []},
+                {"before": None, "after": {}}, "project_manager",
+            )
+            repository.update_document_status(document["id"], "failed")
+            repository.update_job(
+                job["id"], "failed", 100, "Import failed", change["id"]
+            )
+            with self.assertRaisesRegex(ValueError, "unresolved change request"):
+                repository.delete_failed_ingestion_records(job["id"], "admin")
+            self.assertIsNotNone(repository.get_job(job["id"]))
 
     def test_rag_search_is_project_scoped_and_document_can_be_removed(self):
         with tempfile.TemporaryDirectory() as directory:

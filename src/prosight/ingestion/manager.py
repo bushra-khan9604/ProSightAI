@@ -183,6 +183,27 @@ class IngestionManager:
         Path(document["stored_path"]).unlink(missing_ok=True)
         return self.repository.delete_document_record(document_id) or {}
 
+    def clear_failed_job(self, job_id: str, actor_role: str) -> dict:
+        """Permanently remove a failed upload and its diagnostic records."""
+        if actor_role not in {"admin", "project_manager", "planning_engineer"}:
+            raise PermissionError("This role cannot clear failed ingestion jobs")
+        job = self.repository.get_job(job_id)
+        if not job:
+            raise KeyError("Ingestion job not found")
+        if job["status"] != "failed":
+            raise ValueError("Only failed ingestion jobs can be cleared")
+        if job.get("change_request_id"):
+            change = self.repository.get_change_request(job["change_request_id"])
+            if change and change["status"] == "pending":
+                raise ValueError("This failed job still has an unresolved change request")
+        document = self.repository.get_document(job["document_id"])
+        if not document:
+            raise KeyError("Failed upload metadata not found")
+        if document["kind"] == "pdf":
+            self.rag_store.delete_document(document["id"])
+        Path(document["stored_path"]).unlink(missing_ok=True)
+        return self.repository.delete_failed_ingestion_records(job_id, actor_role)
+
     def close(self) -> None:
         """Stop accepting background work and release vector-store resources."""
         self.executor.shutdown(wait=False, cancel_futures=False)

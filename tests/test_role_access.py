@@ -37,6 +37,9 @@ class FakeIngestion:
     def delete_document(self, document_id, role):
         return {"id": document_id, "deleted_by": role}
 
+    def clear_failed_job(self, job_id, role):
+        return {"job_id": job_id, "cleared_by": role}
+
     def close(self):
         return None
 
@@ -63,6 +66,25 @@ class RoleAccessTests(unittest.TestCase):
         for removed in ("employee", "executive", "bid_team"):
             response = self.client.get(f"/api/projects?role={removed}")
             self.assertEqual(400, response.status_code)
+
+    def test_all_upload_roles_can_clear_failed_ingestion_jobs(self):
+        document = self.repository.create_document(
+            "PRJ-2024-001", "broken.xlsx", "xlsx", "role-cleanup", "broken.xlsx"
+        )
+        job = self.repository.create_job(document["id"])
+        self.repository.update_document_status(document["id"], "failed")
+        self.repository.update_job(job["id"], "failed", 100, "Workbook failed")
+        for role in ("project_manager", "planning_engineer", "admin"):
+            response = self.client.delete(f"/api/ingestion-jobs/{job['id']}?role={role}")
+            self.assertEqual(200, response.status_code)
+
+    def test_active_ingestion_job_cannot_be_cleared(self):
+        document = self.repository.create_document(
+            "PRJ-2024-001", "queued.xlsx", "xlsx", "role-queued", "queued.xlsx"
+        )
+        job = self.repository.create_job(document["id"])
+        response = self.client.delete(f"/api/ingestion-jobs/{job['id']}?role=admin")
+        self.assertEqual(409, response.status_code)
 
     def test_removed_role_is_rejected_by_query_endpoint(self):
         response = self.client.post(

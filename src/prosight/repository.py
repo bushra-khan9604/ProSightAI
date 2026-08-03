@@ -14,6 +14,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA = ROOT / "data" / "projects.json"
 DEFAULT_DB = ROOT / "data" / "prosight.db"
+DEFAULT_PROJECT_CODES = frozenset(
+    {"PRJ-2024-001", "PRJ-2025-004", "PRJ-2022-009", "BID-2027-003"}
+)
+DEFAULT_PROJECT_ENRICHMENT = "default_project_details_v1"
 
 
 class ProjectRepository:
@@ -174,6 +178,10 @@ class ProjectRepository:
                         ON project_invoices(project_code);
                     CREATE INDEX IF NOT EXISTS idx_schedule_project_start
                         ON project_schedule_activities(project_code, start_date);
+                    CREATE TABLE IF NOT EXISTS seed_migrations (
+                        migration_key TEXT PRIMARY KEY,
+                        applied_at TEXT NOT NULL
+                    );
                     """
                 )
                 self._ensure_column(db, "documents", "reporting_date", "TEXT")
@@ -194,6 +202,7 @@ class ProjectRepository:
                         f"{change['requested_by'].replace('_', ' ').title()} submitted a "
                         f"{change['action'].replace('_', ' ')} request.",
                     )
+                self._enrich_default_projects(db)
 
     @staticmethod
     def _ensure_column(
@@ -203,6 +212,84 @@ class ProjectRepository:
         columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+    @staticmethod
+    def _normalized_seed_value(value: Any) -> str:
+        """Normalize a seed identity value without changing its displayed form."""
+        return " ".join(str(value or "").strip().casefold().split())
+
+    @classmethod
+    def _seed_item_key(cls, collection: str, item: Any) -> tuple[str, ...]:
+        """Return the stable identity used to append one missing nested seed item."""
+        if collection == "activities":
+            return (cls._normalized_seed_value(item),)
+        if not isinstance(item, dict):
+            return ()
+        if collection == "contacts":
+            return (
+                cls._normalized_seed_value(item.get("name")),
+                cls._normalized_seed_value(item.get("project_role")),
+            )
+        identity_field = {
+            "manpower": "designation",
+            "equipment": "type",
+            "milestones": "name",
+        }[collection]
+        return (cls._normalized_seed_value(item.get(identity_field)),)
+
+    def _enrich_default_projects(self, db: sqlite3.Connection) -> None:
+        """Append missing canonical details to existing default projects once."""
+        projects_table = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'"
+        ).fetchone()
+        if not projects_table:
+            return
+        applied = db.execute(
+            "SELECT 1 FROM seed_migrations WHERE migration_key=?",
+            (DEFAULT_PROJECT_ENRICHMENT,),
+        ).fetchone()
+        if applied:
+            return
+
+        canonical = json.loads(DEFAULT_DATA.read_text(encoding="utf-8"))
+        collections = ("contacts", "activities", "manpower", "equipment", "milestones")
+        for seeded_project in canonical.get("projects", []):
+            project_code = seeded_project.get("code")
+            if project_code not in DEFAULT_PROJECT_CODES:
+                continue
+            row = db.execute(
+                "SELECT payload FROM projects WHERE code=?", (project_code,)
+            ).fetchone()
+            if not row:
+                continue
+            project = json.loads(row["payload"])
+            changed = False
+            for collection in collections:
+                current_items = project.get(collection, [])
+                seeded_items = seeded_project.get(collection, [])
+                if not isinstance(current_items, list) or not isinstance(seeded_items, list):
+                    continue
+                existing_keys = {
+                    self._seed_item_key(collection, item) for item in current_items
+                }
+                for item in seeded_items:
+                    key = self._seed_item_key(collection, item)
+                    if not key or not all(key) or key in existing_keys:
+                        continue
+                    current_items.append(item)
+                    existing_keys.add(key)
+                    changed = True
+                project[collection] = current_items
+            if changed:
+                db.execute(
+                    "UPDATE projects SET payload=? WHERE code=?",
+                    (json.dumps(project), project_code),
+                )
+
+        db.execute(
+            "INSERT INTO seed_migrations (migration_key, applied_at) VALUES (?, ?)",
+            (DEFAULT_PROJECT_ENRICHMENT, self._now()),
+        )
 
     def initialize(self, source: str | Path = DEFAULT_DATA) -> None:
         """Rebuild the SQLite project table from the canonical JSON dataset."""
@@ -329,6 +416,44 @@ class ProjectRepository:
                 db.execute("DELETE FROM ingestion_jobs WHERE document_id = ?", (document_id,))
                 db.execute("DELETE FROM documents WHERE id = ?", (document_id,))
         return document
+
+    def delete_failed_ingestion_records(self, job_id: str, actor_role: str) -> dict[str, Any]:
+        """Atomically remove one failed job and document while retaining an audit event."""
+        self._ensure()
+        with closing(self.connect()) as db:
+            with db:
+                row = db.execute(
+                    """SELECT j.id AS job_id,j.document_id,j.status AS job_status,j.message,
+                              j.change_request_id,d.project_code,d.filename,d.kind,d.status AS document_status
+                       FROM ingestion_jobs j JOIN documents d ON d.id=j.document_id
+                       WHERE j.id=?""",
+                    (job_id,),
+                ).fetchone()
+                if not row:
+                    raise KeyError("Ingestion job not found")
+                record = dict(row)
+                if record["job_status"] != "failed":
+                    raise ValueError("Only failed ingestion jobs can be cleared")
+                if record["change_request_id"]:
+                    change = db.execute(
+                        "SELECT status FROM change_requests WHERE id=?",
+                        (record["change_request_id"],),
+                    ).fetchone()
+                    if change and change["status"] == "pending":
+                        raise ValueError("This failed job still has an unresolved change request")
+                db.execute("DELETE FROM ingestion_jobs WHERE id=?", (job_id,))
+                db.execute("DELETE FROM documents WHERE id=?", (record["document_id"],))
+                audit_before = {
+                    "job_id": record["job_id"], "document_id": record["document_id"],
+                    "project_code": record["project_code"], "filename": record["filename"],
+                    "kind": record["kind"], "status": record["job_status"],
+                    "failure_reason": record["message"],
+                }
+                self._insert_audit(
+                    db, actor_role, "failed_ingestion_cleared", "ingestion_job",
+                    job_id, audit_before, None, self._now(),
+                )
+        return audit_before
 
     def create_job(self, document_id: str) -> dict[str, Any]:
         """Persist a queued ingestion job."""

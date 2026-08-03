@@ -10,7 +10,7 @@ import {
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  askAgent, askAgentStream, confirmDocumentDate, createProjectImportPreview, createProjectPreview,
+  askAgent, askAgentStream, clearFailedIngestionJob, confirmDocumentDate, createProjectImportPreview, createProjectPreview,
   decideChange, deleteDocument, getChangeRequest, getDocuments, getIngestionJob,
   getApprovals, getInvoicePivot, getNotifications, getPortfolioInvoices, getProjectSchedule,
   getPortfolioManpower, getProjectIngestionJobs, getProjects, markAllNotificationsRead,
@@ -530,6 +530,7 @@ function PortfolioImport({open,onClose,roleKey,onImported,projects,selectedProje
 /** Project-scoped upload, ingestion status, review, and document management drawer. */
 function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, setSelectedProject, refreshProjects, returnFocusRef, embedded=false, workspaceMode="update", dataRevision=0 }) {
   const [documents,setDocuments]=useState([]),[jobs,setJobs]=useState([]),[error,setError]=useState("");
+  const [clearingJobs,setClearingJobs]=useState([]),[jobClearErrors,setJobClearErrors]=useState({});
   const [projectChange,setProjectChange]=useState(null);
   const [dateEdits,setDateEdits]=useState({});
   const [draft,setDraft]=useState({
@@ -555,6 +556,7 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
   useEffect(()=>{
     if(!open)return;
     setError("");
+    setClearingJobs([]);setJobClearErrors({});
     setProjectChange(null);
     setDraft(editableProject(formMode==="update"?selectedProjectData:null));
   },[open,formMode,selectedProject]);
@@ -605,6 +607,25 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
           progress:100,message:e.message||"The upload could not be accepted.",
         },...j]);
       }
+    }
+  }
+  async function clearFailedJob(job){
+    if(!window.confirm("Clear this failed upload permanently? The stored file and diagnostic record cannot be recovered."))return;
+    if(!job.document_id){
+      setJobs(items=>items.filter(item=>item.id!==job.id));
+      setJobClearErrors(current=>{const next={...current};delete next[job.id];return next});
+      return;
+    }
+    setClearingJobs(items=>[...items,job.id]);
+    setJobClearErrors(current=>({...current,[job.id]:""}));
+    try{
+      await clearFailedIngestionJob(job.id,roleKey);
+      setJobs(items=>items.filter(item=>item.id!==job.id));
+      setJobClearErrors(current=>{const next={...current};delete next[job.id];return next});
+    }catch(clearError){
+      setJobClearErrors(current=>({...current,[job.id]:clearError.message||"Could not clear failed upload"}));
+    }finally{
+      setClearingJobs(items=>items.filter(id=>id!==job.id));
     }
   }
   async function review(job,decision){
@@ -714,7 +735,11 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
     {jobs.map(job=><div className={`job-row ${job.status==="failed"?"failed":""}`} key={job.id}><div>
       <b>{job.status==="failed"?"Upload failed":job.status.replaceAll("_"," ")}</b>
       {job.filename&&<small>{job.filename}</small>}<span>{job.message}</span>
-      {job.status!=="failed"&&<progress value={job.progress} max="100"/>}</div>
+      {job.status!=="failed"&&<progress value={job.progress} max="100"/>}
+      {jobClearErrors[job.id]&&<small className="job-clear-error">{jobClearErrors[job.id]}</small>}</div>
+      {job.status==="failed"&&<button className="job-clear" type="button" disabled={clearingJobs.includes(job.id)} onClick={()=>clearFailedJob(job)}>
+        <Trash2 size={13}/>{clearingJobs.includes(job.id)?"Clearing…":"Clear"}
+      </button>}
       {job.status==="awaiting_date_confirmation"&&<div className="date-confirm"><input type="date" value={dateEdits[job.id]||job.detected_reporting_date||""} onChange={e=>setDateEdits({...dateEdits,[job.id]:e.target.value})}/><button onClick={()=>confirmDate(job)}>Confirm date</button></div>}
       {job.status==="awaiting_approval"&&<div className="job-actions"><button onClick={()=>showPreview(job)}>Preview</button>
         {roleKey==="admin"&&<><button onClick={()=>review(job,"approve")}>Approve</button><button onClick={()=>review(job,"reject")}>Reject</button></>}</div>}</div>)}
