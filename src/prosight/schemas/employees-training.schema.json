@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Employees and Training Import",
+  "description": "Validated, reviewable records mapped from the Employees and Training worksheets.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "employees": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/EmployeeRecord" }
+    },
+    "training": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/TrainingRecord" }
+    }
+  },
+  "required": ["employees", "training"],
+  "$defs": {
+    "EmployeeRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "employee_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "synthetic_name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "role": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "department": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "home_project_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "employment_type": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "join_date": { "type": "string", "format": "date" },
+        "basic_aed": { "type": "number", "minimum": 0 },
+        "allowance_aed": { "type": "number", "minimum": 0 },
+        "gross_monthly_aed": { "type": "number", "minimum": 0 },
+        "status": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "data_origin": { "type": ["string", "null"], "maxLength": 200 }
+      },
+      "required": ["employee_id", "synthetic_name", "role", "department", "home_project_id", "employment_type", "join_date", "basic_aed", "allowance_aed", "gross_monthly_aed", "status"]
+    },
+    "TrainingRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "training_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "employee_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "course": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "completed_date": { "type": "string", "format": "date" },
+        "expiry_date": { "type": ["string", "null"], "format": "date" },
+        "status": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "evidence_id": { "type": ["string", "null"], "maxLength": 80 }
+      },
+      "required": ["training_id", "employee_id", "course", "completed_date", "status"]
+    }
+  },
+  "x-prosight-import-kind": "employees_training",
+  "x-prosight-workbook-sheets": ["Employees", "Training"]
+}

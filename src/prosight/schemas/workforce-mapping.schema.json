@@ -1,0 +1,114 @@
+{
+  "$defs": {
+    "FieldMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "column": {
+          "anyOf": [
+            {
+              "maximum": 16384,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        }
+      },
+      "title": "FieldMapping",
+      "type": "object"
+    },
+    "SheetMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Aliases",
+          "type": "array"
+        },
+        "header_row": {
+          "anyOf": [
+            {
+              "maximum": 1048576,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header Row"
+        },
+        "data_start_row": {
+          "anyOf": [
+            {
+              "maximum": 1048576,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Start Row"
+        },
+        "fields": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FieldMapping"
+          },
+          "title": "Fields",
+          "type": "object"
+        }
+      },
+      "required": [
+        "aliases",
+        "fields"
+      ],
+      "title": "SheetMapping",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "maximum": 1,
+      "minimum": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "profile_id": {
+      "minLength": 1,
+      "title": "Profile Id",
+      "type": "string"
+    },
+    "sheets": {
+      "additionalProperties": {
+        "$ref": "#/$defs/SheetMapping"
+      },
+      "title": "Sheets",
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "profile_id",
+    "sheets"
+  ],
+  "title": "WorkforceMapping",
+  "type": "object"
+}

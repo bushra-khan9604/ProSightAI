@@ -161,7 +161,7 @@ class IngestionTests(unittest.TestCase):
                     "text": "Hospital commissioning requirements",
                     "metadata": {
                         "document_id": "doc-a", "project_code": "PRJ-A",
-                        "filename": "Hospital.pdf", "page_number": 2, "chunk_number": 1,
+                        "filename": "Hospital.pdf", "page_number": 2, "chunk_number": 1, "approval_status": "approved",
                     },
                 },
                 {
@@ -169,7 +169,7 @@ class IngestionTests(unittest.TestCase):
                     "text": "Tower facade requirements",
                     "metadata": {
                         "document_id": "doc-b", "project_code": "PRJ-B",
-                        "filename": "Tower.pdf", "page_number": 9, "chunk_number": 1,
+                        "filename": "Tower.pdf", "page_number": 9, "chunk_number": 1, "approval_status": "approved",
                     },
                 },
             ])
@@ -179,7 +179,7 @@ class IngestionTests(unittest.TestCase):
             self.assertEqual([], store.search("hospital", "PRJ-A").evidence)
             store.close()
 
-    def test_newer_relevant_document_is_ranked_first(self):
+    def test_relevance_takes_priority_over_document_date(self):
         with tempfile.TemporaryDirectory() as directory:
             store = RAGStore(Path(directory) / "vectors", embedder=self.fake_embeddings)
             store.add_chunks([
@@ -188,20 +188,20 @@ class IngestionTests(unittest.TestCase):
                     "metadata": {
                         "document_id": "old", "project_code": "PRJ-A",
                         "filename": "Old.pdf", "page_number": 1, "chunk_number": 1,
-                        "effective_date": "2026-01-31", "date_status": "confirmed",
+                        "effective_date": "2026-01-31", "date_status": "confirmed", "approval_status": "approved",
                     },
                 },
                 {
-                    "id": "new:1:1", "text": "Tower progress is 72 percent",
+                    "id": "new:1:1", "text": "Hospital catering arrangements",
                     "metadata": {
                         "document_id": "new", "project_code": "PRJ-A",
                         "filename": "New.pdf", "page_number": 1, "chunk_number": 1,
-                        "effective_date": "2026-08-31", "date_status": "confirmed",
+                        "effective_date": "2026-08-31", "date_status": "confirmed", "approval_status": "approved",
                     },
                 },
             ])
             result = store.search("tower progress", "PRJ-A")
-            self.assertEqual("New.pdf, page 1", result.evidence[0].citation)
+            self.assertEqual("Old.pdf, page 1", result.evidence[0].citation)
             store.close()
 
     def test_pdf_reporting_date_is_detected_from_first_pages(self):

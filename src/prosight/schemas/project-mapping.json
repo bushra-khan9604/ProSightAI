@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "profile_id": "default-project-register",
+  "name": "Project register",
+  "sheet": 0,
+  "header_row": null,
+  "data_start_row": null,
+  "date_format": "iso",
+  "fields": {
+    "code": {
+      "description": "code",
+      "aliases": [
+        "project id",
+        "project code",
+        "code",
+        "project no",
+        "project #",
+        "job number",
+        "job code"
+      ],
+      "infer_unlabeled": true
+    },
+    "name": {
+      "description": "name",
+      "aliases": [
+        "project name",
+        "name",
+        "project title",
+        "job name"
+      ]
+    },
+    "status": {
+      "description": "status",
+      "aliases": [
+        "status",
+        "project status"
+      ],
+      "value_map": {
+        "ongoing": "active",
+        "in progress": "active",
+        "finished": "completed",
+        "closed": "completed",
+        "planned": "future",
+        "unawarded": "future"
+      }
+    },
+    "client": {
+      "description": "client",
+      "aliases": [
+        "client",
+        "client name"
+      ]
+    },
+    "location": {
+      "description": "location",
+      "aliases": [
+        "location",
+        "project location"
+      ]
+    },
+    "contract_value_usd": {
+      "description": "contract value usd",
+      "aliases": [
+        "contract value usd",
+        "signed value usd",
+        "contract usd"
+      ],
+      "source_currency": "USD"
+    },
+    "planned_start": {
+      "description": "planned start",
+      "aliases": [
+        "start date",
+        "planned start",
+        "planned start date",
+        "actual start",
+        "actual start date"
+      ]
+    },
+    "planned_finish": {
+      "description": "planned finish",
+      "aliases": [
+        "baseline finish",
+        "planned finish",
+        "planned finish date",
+        "end date",
+        "completion date",
+        "actual end date"
+      ]
+    },
+    "revised_finish": {
+      "description": "revised finish",
+      "aliases": [
+        "forecast finish",
+        "revised finish"
+      ]
+    },
+    "reporting_date": {
+      "description": "reporting date",
+      "aliases": [
+        "reporting date",
+        "report date"
+      ]
+    },
+    "baseline_progress": {
+      "description": "baseline progress",
+      "aliases": [
+        "baseline progress",
+        "baseline progress %"
+      ]
+    },
+    "revised_progress": {
+      "description": "revised progress",
+      "aliases": [
+        "revised progress",
+        "revised progress %"
+      ]
+    },
+    "actual_progress": {
+      "description": "actual progress",
+      "aliases": [
+        "actual progress",
+        "actual progress %",
+        "completed progress",
+        "completed progress %",
+        "percent complete",
+        "% complete",
+        "physical progress"
+      ]
+    }
+  }
+}

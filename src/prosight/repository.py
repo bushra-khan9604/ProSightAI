@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
+import hmac
+import os
+import secrets
 import sqlite3
 import uuid
 from contextlib import closing
@@ -18,10 +23,45 @@ DEFAULT_PROJECT_CODES = frozenset(
     {"PRJ-2024-001", "PRJ-2025-004", "PRJ-2022-009", "BID-2027-003"}
 )
 DEFAULT_PROJECT_ENRICHMENT = "default_project_details_v1"
+SESSION_TTL_SECONDS = 8 * 60 * 60
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCK_SECONDS = 15 * 60
+
+
+def _password_hash(password: str) -> str:
+    """Hash passwords with Argon2id when installed, otherwise secure scrypt locally."""
+    try:
+        from argon2 import PasswordHasher
+        return "argon2id$" + PasswordHasher().hash(password)
+    except ImportError:
+        salt = os.urandom(16)
+        digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+        return "scrypt$" + base64.urlsafe_b64encode(salt).decode() + "$" + base64.urlsafe_b64encode(digest).decode()
+
+
+def _password_matches(password: str, encoded: str) -> bool:
+    """Verify either an Argon2id production hash or the local scrypt fallback."""
+    if encoded.startswith("argon2id$"):
+        try:
+            from argon2 import PasswordHasher
+            return PasswordHasher().verify(encoded.removeprefix("argon2id$"), password)
+        except Exception:
+            return False
+    try:
+        _, salt_text, digest_text = encoded.split("$", 2)
+        salt = base64.urlsafe_b64decode(salt_text.encode())
+        expected = base64.urlsafe_b64decode(digest_text.encode())
+        actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError):
+        return False
 
 
 class ProjectRepository:
     """Load sample project data and expose role-filtered read operations."""
+
+    integrity_error = sqlite3.IntegrityError
+    backend = "sqlite"
 
     def __init__(self, db_path: str | Path = DEFAULT_DB):
         """Create a repository using the supplied SQLite database path."""
@@ -56,6 +96,28 @@ class ProjectRepository:
                         created_at TEXT NOT NULL,
                         UNIQUE(project_code, checksum)
                     );
+                    CREATE TABLE IF NOT EXISTS users (
+                        id TEXT PRIMARY KEY,
+                        username TEXT NOT NULL UNIQUE,
+                        display_name TEXT NOT NULL,
+                        password_hash TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        failed_login_count INTEGER NOT NULL DEFAULT 0,
+                        locked_until TEXT,
+                        created_at TEXT NOT NULL,
+                        last_login_at TEXT
+                    );
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        id TEXT PRIMARY KEY,
+                        token_hash TEXT NOT NULL UNIQUE,
+                        user_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        revoked_at TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_sessions_token
+                        ON sessions(token_hash);
                     CREATE TABLE IF NOT EXISTS ingestion_jobs (
                         id TEXT PRIMARY KEY,
                         document_id TEXT NOT NULL,
@@ -138,9 +200,125 @@ class ProjectRepository:
                         allocation TEXT,
                         status TEXT,
                         leave_balance REAL,
+                        employee_id TEXT,
+                        period_start TEXT,
+                        period_end TEXT,
+                        capacity_hours REAL,
+                        planned_hours REAL,
+                        actual_hours REAL,
+                        billable_hours REAL,
+                        leave_hours REAL,
+                        allocation_percent REAL,
+                        billing_rate REAL,
+                        cost_rate REAL,
+                        revision TEXT,
+                        approval_status TEXT NOT NULL DEFAULT 'approved',
                         data_json TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         import_id TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS employees (
+                        employee_id TEXT PRIMARY KEY,
+                        synthetic_name TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        department TEXT NOT NULL,
+                        home_project_id TEXT NOT NULL,
+                        employment_type TEXT NOT NULL,
+                        join_date TEXT NOT NULL,
+                        basic_aed REAL NOT NULL,
+                        allowance_aed REAL NOT NULL,
+                        gross_monthly_aed REAL NOT NULL,
+                        status TEXT NOT NULL,
+                        data_origin TEXT,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        import_id TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS employee_training (
+                        training_id TEXT PRIMARY KEY,
+                        employee_id TEXT NOT NULL,
+                        course TEXT NOT NULL,
+                        completed_date TEXT NOT NULL,
+                        expiry_date TEXT,
+                        status TEXT NOT NULL,
+                        evidence_id TEXT,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        import_id TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS attendance_records (
+                        timesheet_id TEXT PRIMARY KEY,
+                        employee_id TEXT NOT NULL,
+                        project_id TEXT NOT NULL,
+                        work_date TEXT NOT NULL,
+                        attendance_status TEXT NOT NULL,
+                        regular_hours REAL NOT NULL,
+                        ot_hours REAL NOT NULL,
+                        total_hours REAL NOT NULL,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        import_id TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS payroll_records (
+                        payroll_id TEXT PRIMARY KEY,
+                        employee_id TEXT NOT NULL,
+                        project_id TEXT NOT NULL,
+                        month TEXT NOT NULL,
+                        basic_aed REAL NOT NULL,
+                        allowance_aed REAL NOT NULL,
+                        ot_hours REAL NOT NULL,
+                        ot_rate_aed REAL NOT NULL,
+                        ot_pay_aed REAL NOT NULL,
+                        gross_aed REAL NOT NULL,
+                        employer_burden_aed REAL NOT NULL,
+                        total_cost_aed REAL NOT NULL,
+                        payment_date TEXT NOT NULL,
+                        days_worked INTEGER NOT NULL,
+                        paid_leave_days INTEGER NOT NULL,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        import_id TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS direct_allocations (
+                        employee_id TEXT NOT NULL,
+                        project_id TEXT NOT NULL,
+                        month TEXT NOT NULL,
+                        fte_allocation REAL NOT NULL,
+                        regular_hours REAL NOT NULL,
+                        ot_hours REAL NOT NULL,
+                        payroll_cost_aed REAL NOT NULL,
+                        basis TEXT,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        import_id TEXT NOT NULL,
+                        PRIMARY KEY(employee_id, project_id, month)
+                    );
+                    CREATE TABLE IF NOT EXISTS subcontract_crews (
+                        subcontract_id TEXT NOT NULL,
+                        project_id TEXT NOT NULL,
+                        vendor_id TEXT NOT NULL,
+                        month TEXT NOT NULL,
+                        trade TEXT NOT NULL,
+                        planned_workers INTEGER NOT NULL,
+                        actual_workers INTEGER NOT NULL,
+                        worker_variance INTEGER NOT NULL,
+                        available_labor_hours REAL NOT NULL,
+                        definition TEXT,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        import_id TEXT NOT NULL,
+                        PRIMARY KEY(subcontract_id, project_id, month)
+                    );
+                    CREATE TABLE IF NOT EXISTS deployment_forecasts (
+                        project_id TEXT NOT NULL,
+                        month TEXT NOT NULL,
+                        direct_headcount INTEGER NOT NULL,
+                        subcontract_workers INTEGER NOT NULL,
+                        basis TEXT,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        import_id TEXT NOT NULL,
+                        PRIMARY KEY(project_id, month)
                     );
                     CREATE TABLE IF NOT EXISTS project_invoices (
                         job_number TEXT NOT NULL,
@@ -174,6 +352,22 @@ class ProjectRepository:
                     );
                     CREATE INDEX IF NOT EXISTS idx_manpower_project
                         ON manpower_assignments(current_project_code);
+                    CREATE INDEX IF NOT EXISTS idx_employees_home_project
+                        ON employees(home_project_id);
+                    CREATE INDEX IF NOT EXISTS idx_training_employee
+                        ON employee_training(employee_id);
+                    CREATE INDEX IF NOT EXISTS idx_attendance_project_date
+                        ON attendance_records(project_id, work_date);
+                    CREATE INDEX IF NOT EXISTS idx_attendance_employee_date
+                        ON attendance_records(employee_id, work_date);
+                    CREATE INDEX IF NOT EXISTS idx_payroll_project_month
+                        ON payroll_records(project_id, month);
+                    CREATE INDEX IF NOT EXISTS idx_direct_allocation_project_month
+                        ON direct_allocations(project_id, month);
+                    CREATE INDEX IF NOT EXISTS idx_subcontract_project_month
+                        ON subcontract_crews(project_id, month);
+                    CREATE INDEX IF NOT EXISTS idx_deployment_project_month
+                        ON deployment_forecasts(project_id, month);
                     CREATE INDEX IF NOT EXISTS idx_invoices_project
                         ON project_invoices(project_code);
                     CREATE INDEX IF NOT EXISTS idx_schedule_project_start
@@ -187,8 +381,39 @@ class ProjectRepository:
                 self._ensure_column(db, "documents", "reporting_date", "TEXT")
                 self._ensure_column(db, "documents", "effective_date", "TEXT")
                 self._ensure_column(db, "documents", "date_status", "TEXT NOT NULL DEFAULT 'pending'")
+                self._ensure_column(db, "documents", "approval_status", "TEXT NOT NULL DEFAULT 'awaiting_approval'")
+                self._ensure_column(db, "documents", "index_status", "TEXT NOT NULL DEFAULT 'not_indexed'")
+                self._ensure_column(db, "documents", "revision", "TEXT")
+                self._ensure_column(db, "documents", "security_classification", "TEXT NOT NULL DEFAULT 'internal'")
+                self._ensure_column(db, "documents", "approved_by", "TEXT")
+                self._ensure_column(db, "documents", "approved_at", "TEXT")
+                self._ensure_column(db, "users", "failed_login_count", "INTEGER NOT NULL DEFAULT 0")
+                self._ensure_column(db, "users", "locked_until", "TEXT")
+                for column, declaration in (
+                    ("employee_id", "TEXT"), ("period_start", "TEXT"),
+                    ("period_end", "TEXT"), ("capacity_hours", "REAL"),
+                    ("planned_hours", "REAL"), ("actual_hours", "REAL"),
+                    ("billable_hours", "REAL"), ("leave_hours", "REAL"),
+                    ("allocation_percent", "REAL"), ("billing_rate", "REAL"),
+                    ("cost_rate", "REAL"), ("revision", "TEXT"),
+                    ("approval_status", "TEXT NOT NULL DEFAULT 'approved'"),
+                ):
+                    self._ensure_column(db, "manpower_assignments", column, declaration)
+                db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_manpower_period "
+                    "ON manpower_assignments(period_start, period_end)"
+                )
+                db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_manpower_department "
+                    "ON manpower_assignments(department)"
+                )
+                db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_manpower_employee "
+                    "ON manpower_assignments(employee_id)"
+                )
                 self._ensure_column(db, "portfolio_imports", "dataset", "TEXT")
                 self._ensure_column(db, "portfolio_imports", "project_code", "TEXT")
+                self._seed_demo_users(db)
                 # Existing pending requests predate notifications but must still
                 # appear as unread Admin work after this additive migration.
                 pending = db.execute(
@@ -203,6 +428,27 @@ class ProjectRepository:
                         f"{change['action'].replace('_', ' ')} request.",
                     )
                 self._enrich_default_projects(db)
+
+    def _seed_demo_users(self, db: sqlite3.Connection) -> None:
+        """Create clearly documented local users for first-run development only."""
+        if os.environ.get("PROSIGHT_SEED_DEMO_USERS", "1").lower() in {"0", "false", "no"}:
+            return
+        existing = db.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
+        if existing:
+            return
+        now = self._now()
+        demo_users = (
+            ("admin", "ProSight Administrator", "admin", "Admin123!"),
+            ("manager", "Project Manager", "project_manager", "Manager123!"),
+            ("planner", "Planning Engineer", "planning_engineer", "Planner123!"),
+        )
+        for username, display_name, role, password in demo_users:
+            db.execute(
+                """INSERT INTO users
+                   (id,username,display_name,password_hash,role,status,created_at)
+                   VALUES (?,?,?,?,?,'active',?)""",
+                (str(uuid.uuid4()), username, display_name, _password_hash(password), role, now),
+            )
 
     @staticmethod
     def _ensure_column(
@@ -332,6 +578,135 @@ class ProjectRepository:
             self.initialize()
         self.ensure_schema()
 
+    @staticmethod
+    def _public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        """Return identity fields safe for the browser."""
+        return {
+            "id": row["id"],
+            "username": row["username"],
+            "display_name": row["display_name"],
+            "role": row["role"],
+            "status": row["status"],
+        }
+
+    def authenticate_user(self, username: str, password: str) -> dict[str, Any] | None:
+        """Verify an active user without exposing password hashes."""
+        self._ensure()
+        normalized = username.strip().casefold()
+        with closing(self.connect()) as db:
+            row = db.execute(
+                "SELECT * FROM users WHERE username=? AND status='active'",
+                (normalized,),
+            ).fetchone()
+            if not row:
+                return None
+            if row["locked_until"] and row["locked_until"] > self._now():
+                return None
+            if not _password_matches(password, row["password_hash"]):
+                failures = int(row["failed_login_count"] or 0) + 1
+                locked_until = None
+                if failures >= LOGIN_MAX_FAILURES:
+                    locked_until = datetime.fromtimestamp(
+                        datetime.now(UTC).timestamp() + LOGIN_LOCK_SECONDS, UTC
+                    ).isoformat()
+                    failures = 0
+                db.execute(
+                    "UPDATE users SET failed_login_count=?,locked_until=? WHERE id=?",
+                    (failures, locked_until, row["id"]),
+                )
+                return None
+            db.execute(
+                "UPDATE users SET last_login_at=?,failed_login_count=0,locked_until=NULL WHERE id=?",
+                (self._now(), row["id"]),
+            )
+        return self._public_user(row)
+
+    def create_session(self, user_id: str, ttl_seconds: int = SESSION_TTL_SECONDS) -> str:
+        """Create a revocable opaque session token; only its hash is persisted."""
+        self._ensure()
+        token = secrets.token_urlsafe(48)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        created = datetime.now(UTC)
+        expires = created.timestamp() + ttl_seconds
+        expires_at = datetime.fromtimestamp(expires, UTC).isoformat()
+        with closing(self.connect()) as db:
+            with db:
+                db.execute(
+                    """INSERT INTO sessions
+                       (id,token_hash,user_id,created_at,expires_at,revoked_at)
+                       VALUES (?,?,?,?,?,NULL)""",
+                    (str(uuid.uuid4()), token_hash, user_id, created.isoformat(), expires_at),
+                )
+        return token
+
+    def get_session_user(self, token: str | None) -> dict[str, Any] | None:
+        """Resolve a non-expired, non-revoked session to its current DB role."""
+        if not token:
+            return None
+        self._ensure()
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with closing(self.connect()) as db:
+            row = db.execute(
+                """SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
+                   WHERE s.token_hash=? AND s.revoked_at IS NULL
+                   AND s.expires_at>? AND u.status='active'""",
+                (token_hash, self._now()),
+            ).fetchone()
+        return self._public_user(row) if row else None
+
+    def revoke_session(self, token: str | None) -> None:
+        """Revoke one opaque session token."""
+        if not token:
+            return
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with closing(self.connect()) as db:
+            with db:
+                db.execute(
+                    "UPDATE sessions SET revoked_at=COALESCE(revoked_at,?) WHERE token_hash=?",
+                    (self._now(), token_hash),
+                )
+
+    def update_user_password(self, user_id: str, password: str) -> None:
+        """Replace a password hash after the caller has authenticated the user."""
+        if len(password) < 12:
+            raise ValueError("New password must contain at least 12 characters")
+        self._ensure()
+        with closing(self.connect()) as db:
+            with db:
+                db.execute(
+                    "UPDATE users SET password_hash=? WHERE id=?",
+                    (_password_hash(password), user_id),
+                )
+
+    def record_auth_event(self, user: dict[str, Any] | None, action: str, target_id: str = "auth") -> None:
+        """Write a privacy-safe authentication event to the existing audit stream."""
+        self._ensure()
+        with closing(self.connect()) as db:
+            with db:
+                self._insert_audit(
+                    db,
+                    (user or {}).get("role", "anonymous"),
+                    action,
+                    "authentication",
+                    target_id,
+                    None,
+                    {"user_id": (user or {}).get("id")} if user else None,
+                    self._now(),
+                )
+
+    @staticmethod
+    def _reject_deleted_project(db, code):
+        if isinstance(db, sqlite3.Connection):
+            if not db.in_transaction:
+                db.execute("BEGIN IMMEDIATE")
+        else:
+            db.execute("LOCK TABLE seed_migrations IN ROW SHARE MODE")
+        if not code:
+            return
+        marker = "deleted_project:" + hashlib.sha256(code.encode()).hexdigest()
+        if db.execute("SELECT migration_key FROM seed_migrations WHERE migration_key=?", (marker,)).fetchone():
+            raise ValueError("This project was deleted; use a new project code")
+
     def create_document(
         self, project_code: str, filename: str, kind: str, checksum: str, stored_path: str
     ) -> dict[str, Any]:
@@ -341,13 +716,14 @@ class ProjectRepository:
         with closing(self.connect()) as db:
             try:
                 with db:
+                    self._reject_deleted_project(db, project_code)
                     db.execute(
                         """INSERT INTO documents
                            (id,project_code,filename,kind,checksum,stored_path,status,created_at)
                            VALUES (?,?,?,?,?,?,?,?)""",
                         (document_id, project_code, filename, kind, checksum, stored_path, "queued", self._now()),
                     )
-            except sqlite3.IntegrityError as error:
+            except self.integrity_error as error:
                 raise ValueError("This file has already been uploaded to the project") from error
         return self.get_document(document_id)
 
@@ -364,7 +740,8 @@ class ProjectRepository:
         with closing(self.connect()) as db:
             rows = db.execute(
                 """SELECT id, project_code, filename, kind, checksum, status, created_at,
-                          reporting_date, effective_date, date_status
+                          reporting_date, effective_date, date_status, approval_status,
+                          index_status, revision, security_classification, approved_by, approved_at
                    FROM documents WHERE project_code = ? AND status <> 'failed'
                    ORDER BY created_at DESC""",
                 (project_code,),
@@ -377,7 +754,9 @@ class ProjectRepository:
         with closing(self.connect()) as db:
             rows = db.execute(
                 """SELECT j.*, d.reporting_date AS detected_reporting_date,
-                          d.effective_date, d.date_status, d.kind, d.filename
+                          d.effective_date, d.date_status, d.kind, d.filename,
+                          d.approval_status, d.index_status, d.revision,
+                          d.security_classification
                    FROM ingestion_jobs j JOIN documents d ON d.id=j.document_id
                    WHERE d.project_code=? ORDER BY j.created_at DESC""",
                 (project_code,),
@@ -389,6 +768,34 @@ class ProjectRepository:
         with closing(self.connect()) as db:
             with db:
                 db.execute("UPDATE documents SET status = ? WHERE id = ?", (status, document_id))
+
+    def update_document_index_status(self, document_id: str, status: str) -> None:
+        """Persist embedding/index status independently from approval status."""
+        with closing(self.connect()) as db:
+            with db:
+                db.execute("UPDATE documents SET index_status=? WHERE id=?", (status, document_id))
+
+    def create_document_approval_request(
+        self, document: dict[str, Any], requested_by: str, job_id: str, preview: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create a pending document approval request before any embedding."""
+        change = self.create_change_request(
+            "document_approval",
+            document["project_code"],
+            {"document_id": document["id"], "job_id": job_id},
+            preview,
+            requested_by,
+        )
+        self.update_document_status(document["id"], "awaiting_approval")
+        self.update_document_index_status(document["id"], "not_indexed")
+        self.update_job(
+            job_id,
+            "awaiting_approval",
+            100,
+            "Document preview is waiting for Admin approval",
+            change["id"],
+        )
+        return change
 
     def update_document_date(
         self,
@@ -511,6 +918,17 @@ class ProjectRepository:
         change_id = str(uuid.uuid4())
         with closing(self.connect()) as db:
             with db:
+                self._reject_deleted_project(db, project_code)
+                def check_project_references(value):
+                    if isinstance(value, dict):
+                        for key, item in value.items():
+                            if key in {"project_code", "current_project_code", "mobilized_project_code", "code"} and isinstance(item, str):
+                                self._reject_deleted_project(db, item)
+                            check_project_references(item)
+                    elif isinstance(value, list):
+                        for item in value:
+                            check_project_references(item)
+                check_project_references(payload)
                 db.execute(
                     "INSERT INTO change_requests VALUES (?,?,?,?,?,'pending',?,?,?,?)",
                     (
@@ -531,10 +949,10 @@ class ProjectRepository:
     ) -> None:
         """Insert one idempotent role notification inside the caller's transaction."""
         db.execute(
-            """INSERT OR IGNORE INTO notifications
+            """INSERT INTO notifications
                (id,recipient_role,event_type,project_code,change_request_id,
                 title,message,read_at,created_at)
-               VALUES (?,?,?,?,?,?,?,NULL,?)""",
+               VALUES (?,?,?,?,?,?,?,NULL,?) ON CONFLICT DO NOTHING""",
             (
                 str(uuid.uuid4()), recipient_role, event_type, project_code,
                 change_request_id, title, message, self._now(),
@@ -609,6 +1027,9 @@ class ProjectRepository:
         normalized = " ".join(value.strip().casefold().split())
         if not normalized:
             return None
+        # Head Office is a workforce assignment, never a fuzzy project-name match.
+        if ''.join(character for character in normalized if character.isalnum()) in {'ho', 'headoffice'}:
+            return None
         with closing(self.connect()) as db:
             rows = db.execute("SELECT code,name FROM projects").fetchall()
         exact = [
@@ -632,6 +1053,7 @@ class ProjectRepository:
         import_id, job_id, now = str(uuid.uuid4()), str(uuid.uuid4()), self._now()
         with closing(self.connect()) as db:
             with db:
+                self._reject_deleted_project(db, project_code)
                 db.execute(
                     """INSERT INTO portfolio_imports
                        (id,filename,checksum,stored_path,uploaded_by,status,summary_json,
@@ -674,15 +1096,58 @@ class ProjectRepository:
     def apply_portfolio_import(
         self, import_id: str, parsed: dict[str, Any]
     ) -> dict[str, Any]:
-        """Atomically upsert validated manpower and invoice rows with audit."""
+        """Atomically upsert validated portfolio/workforce rows with audit."""
         record = self.get_portfolio_import(import_id, include_path=True)
         if not record:
             raise KeyError("Portfolio import not found")
         now, inserted_manpower, updated_manpower = self._now(), 0, 0
         inserted_invoices, updated_invoices, inserted_schedule, updated_schedule = 0, 0, 0, 0
+        workforce_config = {
+            "employees": ("employees", ("employee_id",), (
+                "employee_id", "synthetic_name", "role", "department", "home_project_id",
+                "employment_type", "join_date", "basic_aed", "allowance_aed",
+                "gross_monthly_aed", "status", "data_origin",
+            )),
+            "training": ("employee_training", ("training_id",), (
+                "training_id", "employee_id", "course", "completed_date", "expiry_date",
+                "status", "evidence_id",
+            )),
+            "attendance": ("attendance_records", ("timesheet_id",), (
+                "timesheet_id", "employee_id", "project_id", "work_date",
+                "attendance_status", "regular_hours", "ot_hours", "total_hours",
+            )),
+            "payroll": ("payroll_records", ("payroll_id",), (
+                "payroll_id", "employee_id", "project_id", "month", "basic_aed",
+                "allowance_aed", "ot_hours", "ot_rate_aed", "ot_pay_aed", "gross_aed",
+                "employer_burden_aed", "total_cost_aed", "payment_date", "days_worked",
+                "paid_leave_days",
+            )),
+            "direct_allocations": ("direct_allocations", ("employee_id", "project_id", "month"), (
+                "employee_id", "project_id", "month", "fte_allocation", "regular_hours",
+                "ot_hours", "payroll_cost_aed", "basis",
+            )),
+            "subcontract_crews": ("subcontract_crews", ("subcontract_id", "project_id", "month"), (
+                "subcontract_id", "project_id", "vendor_id", "month", "trade",
+                "planned_workers", "actual_workers", "worker_variance",
+                "available_labor_hours", "definition",
+            )),
+            "deployment_forecasts": ("deployment_forecasts", ("project_id", "month"), (
+                "project_id", "month", "direct_headcount", "subcontract_workers", "basis",
+            )),
+        }
+        workforce_counts = {
+            collection: {"inserted": 0, "updated": 0}
+            for collection in workforce_config if collection in parsed
+        }
         with closing(self.connect()) as db:
             with db:
-                for item in parsed["manpower"]:
+                if not db.execute("SELECT id FROM portfolio_imports WHERE id=?", (import_id,)).fetchone():
+                    raise ValueError("The source import was removed")
+                collections = ("manpower", "invoices", "schedule", *workforce_config)
+                for item in [row for name in collections for row in parsed.get(name, [])]:
+                    for field in ("project_code", "current_project_code", "mobilized_project_code", "project_id", "home_project_id"):
+                        self._reject_deleted_project(db, item.get(field))
+                for item in parsed.get("manpower", []):
                     before_row = db.execute(
                         "SELECT data_json FROM manpower_assignments WHERE emp_code=?",
                         (item["emp_code"],),
@@ -696,8 +1161,11 @@ class ProjectRepository:
                         """INSERT INTO manpower_assignments
                            (emp_code,current_project_code,mobilized_project_code,name,
                             designation,department,category,current_location,allocation,
-                            status,leave_balance,data_json,updated_at,import_id)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            status,leave_balance,employee_id,period_start,period_end,
+                            capacity_hours,planned_hours,actual_hours,billable_hours,
+                            leave_hours,allocation_percent,billing_rate,cost_rate,
+                            revision,approval_status,data_json,updated_at,import_id)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                            ON CONFLICT(emp_code) DO UPDATE SET
                             current_project_code=excluded.current_project_code,
                             mobilized_project_code=excluded.mobilized_project_code,
@@ -705,13 +1173,27 @@ class ProjectRepository:
                             department=excluded.department,category=excluded.category,
                             current_location=excluded.current_location,
                             allocation=excluded.allocation,status=excluded.status,
-                            leave_balance=excluded.leave_balance,data_json=excluded.data_json,
+                            leave_balance=excluded.leave_balance,employee_id=excluded.employee_id,
+                            period_start=excluded.period_start,period_end=excluded.period_end,
+                            capacity_hours=excluded.capacity_hours,planned_hours=excluded.planned_hours,
+                            actual_hours=excluded.actual_hours,billable_hours=excluded.billable_hours,
+                            leave_hours=excluded.leave_hours,allocation_percent=excluded.allocation_percent,
+                            billing_rate=excluded.billing_rate,cost_rate=excluded.cost_rate,
+                            revision=excluded.revision,approval_status=excluded.approval_status,
+                            data_json=excluded.data_json,
                             updated_at=excluded.updated_at,import_id=excluded.import_id""",
                         (
                             item["emp_code"], item["current_project_code"],
                             item["mobilized_project_code"], item["name"], item["designation"],
                             item["department"], item["category"], item["current_location"],
                             item["allocation"], item["status"], item["leave_balance"],
+                            item.get("employee_id") or item["emp_code"], item.get("period_start"),
+                            item.get("period_end"), item.get("capacity_hours"),
+                            item.get("planned_hours"), item.get("actual_hours"),
+                            item.get("billable_hours"), item.get("leave_hours"),
+                            item.get("allocation_percent"), item.get("billing_rate"),
+                            item.get("cost_rate"), item.get("revision"),
+                            item.get("approval_status") or "approved",
                             json.dumps(item), now, import_id,
                         ),
                     )
@@ -719,7 +1201,7 @@ class ProjectRepository:
                         db, record["uploaded_by"], "portfolio_manpower_upsert",
                         "manpower_assignment", item["emp_code"], before, item, now,
                     )
-                for item in parsed["invoices"]:
+                for item in parsed.get("invoices", []):
                     before_row = db.execute(
                         """SELECT project_code,data_json FROM project_invoices
                            WHERE job_number=? AND draft_invoice_number=?""",
@@ -795,6 +1277,33 @@ class ProjectRepository:
                         "project_schedule_activity",
                         f"{item['project_code']}:{item['activity_id']}", before, item, now,
                     )
+                for collection, (table, keys, fields) in workforce_config.items():
+                    for item in parsed.get(collection, []):
+                        where = " AND ".join(f"{field}=?" for field in keys)
+                        key_values = tuple(item[field] for field in keys)
+                        before_row = db.execute(
+                            f"SELECT data_json FROM {table} WHERE {where}", key_values
+                        ).fetchone()
+                        before = json.loads(before_row["data_json"]) if before_row else None
+                        counter = "updated" if before_row else "inserted"
+                        workforce_counts[collection][counter] += 1
+                        columns = (*fields, "data_json", "updated_at", "import_id")
+                        placeholders = ",".join("?" for _ in columns)
+                        updates = ",".join(
+                            f"{field}=excluded.{field}" for field in columns if field not in keys
+                        )
+                        conflict = ",".join(keys)
+                        db.execute(
+                            f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders}) "
+                            f"ON CONFLICT({conflict}) DO UPDATE SET {updates}",
+                            tuple(item.get(field) for field in fields)
+                            + (json.dumps(item), now, import_id),
+                        )
+                        self._insert_audit(
+                            db, record["uploaded_by"], f"{collection}_upsert",
+                            collection.rstrip("s"), ":".join(str(value) for value in key_values),
+                            before, item, now,
+                        )
                 summary = {
                     "manpower": {"inserted": inserted_manpower, "updated": updated_manpower},
                     "invoices": {"inserted": inserted_invoices, "updated": updated_invoices},
@@ -805,6 +1314,7 @@ class ProjectRepository:
                            GROUP BY levels,status)"""
                     ).fetchone()["count"],
                 }
+                summary.update(workforce_counts)
                 db.execute(
                     """UPDATE portfolio_imports SET status='completed',summary_json=?,
                        completed_at=? WHERE id=?""",
@@ -818,9 +1328,25 @@ class ProjectRepository:
                 self._insert_notification(
                     db, record["uploaded_by"], "portfolio_import_completed", "PORTFOLIO",
                     import_id, "Portfolio import completed",
-                    f"Imported {len(parsed['manpower'])} manpower and "
-                    f"{len(parsed['invoices'])} invoice and "
-                    f"{len(parsed.get('schedule', []))} schedule rows.",
+                    "Imported " + ", ".join(
+                        f"{len(parsed.get(name, []))} {name.replace('_', ' ')}"
+                        for name in collections if parsed.get(name)
+                    ) + " rows.",
+                )
+        return self.get_portfolio_import(import_id)
+
+    def set_portfolio_import_status(self, import_id: str, status: str, message: str) -> dict[str, Any] | None:
+        """Update import workflow state while its change request is awaiting review."""
+        now = self._now()
+        with closing(self.connect()) as db:
+            with db:
+                db.execute(
+                    "UPDATE portfolio_imports SET status=? WHERE id=?",
+                    (status, import_id),
+                )
+                db.execute(
+                    "UPDATE portfolio_import_jobs SET status=?,progress=?,message=?,updated_at=? WHERE import_id=?",
+                    (status, 100 if status == "awaiting_approval" else 0, message, now, import_id),
                 )
         return self.get_portfolio_import(import_id)
 
@@ -896,6 +1422,190 @@ class ProjectRepository:
             rows = db.execute(query, params).fetchall()
         return [json.loads(row["data_json"]) for row in rows]
 
+    @staticmethod
+    def _resource_number(value: Any) -> float:
+        """Convert an optional workbook number into a safe dashboard value."""
+        try:
+            return float(str(value).replace(",", "").replace("%", "").strip())
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _resource_metrics(cls, item: dict[str, Any], updated_at: str | None = None) -> dict[str, Any]:
+        """Add deterministic allocation, utilization, and billing metrics."""
+        capacity = cls._resource_number(item.get("capacity_hours"))
+        planned = cls._resource_number(item.get("planned_hours"))
+        actual = cls._resource_number(item.get("actual_hours"))
+        billable = cls._resource_number(item.get("billable_hours"))
+        allocation = item.get("allocation_percent")
+        if allocation in (None, ""):
+            allocation = planned / capacity * 100 if capacity else cls._resource_number(item.get("allocation"))
+        allocation = round(cls._resource_number(allocation), 2)
+        utilization = round(actual / capacity * 100, 2) if capacity else 0.0
+        billing_rate = cls._resource_number(item.get("billing_rate"))
+        cost_rate = cls._resource_number(item.get("cost_rate"))
+        item.update(
+            employee_id=item.get("employee_id") or item.get("emp_code"),
+            employee_name=item.get("employee_name") or item.get("name"),
+            project_code=item.get("project_code") or item.get("current_project_code"),
+            capacity_hours=capacity, planned_hours=planned, actual_hours=actual,
+            billable_hours=billable, allocation_percent=allocation,
+            utilization_percent=utilization,
+            billing_value=round(billable * billing_rate, 2),
+            cost_value=round(actual * cost_rate, 2),
+            allocation_status=("overallocated" if allocation > 100 else
+                               "underallocated" if allocation < 80 else "balanced"),
+            billable_status="billable" if billable > 0 else "non_billable",
+            last_updated=item.get("last_updated") or updated_at,
+        )
+        return item
+
+    def _resource_records(
+        self, project_code: str | None = None, date_from: str | None = None,
+        date_to: str | None = None, department: str | None = None,
+        designation: str | None = None, employee: str | None = None,
+        allocation_status: str | None = None, billable_status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return normalized, filtered resource records for all dashboard views."""
+        self._ensure()
+        query = "SELECT data_json,updated_at FROM manpower_assignments WHERE 1=1"
+        params: list[Any] = []
+        if project_code:
+            query += " AND current_project_code=?"
+            params.append(project_code)
+        if date_from:
+            query += " AND (period_end IS NULL OR period_end>=?)"
+            params.append(date_from)
+        if date_to:
+            query += " AND (period_start IS NULL OR period_start<=?)"
+            params.append(date_to)
+        for column, value in (("department", department), ("designation", designation)):
+            if value:
+                query += f" AND {column}=?"
+                params.append(value)
+        if employee:
+            query += " AND (emp_code LIKE ? OR name LIKE ? OR employee_id LIKE ?)"
+            params.extend([f"%{employee}%"] * 3)
+        with closing(self.connect()) as db:
+            rows = db.execute(query, params).fetchall()
+        records = [self._resource_metrics(json.loads(row["data_json"]), row["updated_at"]) for row in rows]
+        if allocation_status:
+            records = [item for item in records if item["allocation_status"] == allocation_status]
+        if billable_status:
+            records = [item for item in records if item["billable_status"] == billable_status]
+        return sorted(records, key=lambda item: (str(item.get("employee_name") or ""), str(item.get("project_code") or "")))
+
+    def resource_allocation_details(
+        self, project_code: str | None = None, date_from: str | None = None,
+        date_to: str | None = None, department: str | None = None,
+        designation: str | None = None, employee: str | None = None,
+        allocation_status: str | None = None, billable_status: str | None = None,
+        limit: int = 100, offset: int = 0,
+    ) -> dict[str, Any]:
+        """Return paginated normalized records and total count."""
+        records = self._resource_records(
+            project_code, date_from, date_to, department, designation,
+            employee, allocation_status, billable_status,
+        )
+        return {"items": records[offset : offset + limit], "total": len(records), "limit": limit, "offset": offset}
+
+    def resource_allocation_summary(
+        self, project_code: str | None = None, date_from: str | None = None,
+        date_to: str | None = None, department: str | None = None,
+        designation: str | None = None, employee: str | None = None,
+        allocation_status: str | None = None, billable_status: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate authorized resource records without AI-generated arithmetic."""
+        records = self._resource_records(
+            project_code, date_from, date_to, department, designation,
+            employee, allocation_status, billable_status,
+        )
+        employees = {item.get("employee_id") for item in records if item.get("employee_id")}
+        totals = {
+            "total_manpower": len(employees),
+            "active_projects": len({item.get("project_code") for item in records if item.get("project_code")}),
+            "planned_hours": round(sum(item["planned_hours"] for item in records), 2),
+            "actual_hours": round(sum(item["actual_hours"] for item in records), 2),
+            "billable_hours": round(sum(item["billable_hours"] for item in records), 2),
+            "capacity_hours": round(sum(item["capacity_hours"] for item in records), 2),
+            "billing_value": round(sum(item["billing_value"] for item in records), 2),
+            "cost_value": round(sum(item["cost_value"] for item in records), 2),
+            "over_allocation_count": len({item.get("employee_id") for item in records if item["allocation_status"] == "overallocated"}),
+            "under_allocation_count": len({item.get("employee_id") for item in records if item["allocation_status"] == "underallocated"}),
+        }
+        totals["utilization_percent"] = round(
+            totals["actual_hours"] / totals["capacity_hours"] * 100, 2
+        ) if totals["capacity_hours"] else 0.0
+        by_project: dict[str, dict[str, Any]] = {}
+        by_department: dict[str, dict[str, Any]] = {}
+        for item in records:
+            for key, label in (("project_code", item.get("project_code") or "Unassigned"),
+                               ("department", item.get("department") or "Unassigned")):
+                target = by_project if key == "project_code" else by_department
+                bucket = target.setdefault(label, {"name": label, "headcount": 0, "capacity_hours": 0.0,
+                    "planned_hours": 0.0, "actual_hours": 0.0, "billable_hours": 0.0,
+                    "billing_value": 0.0, "allocation_percent": 0.0})
+                bucket["headcount"] += 1
+                for metric in ("capacity_hours", "planned_hours", "actual_hours", "billable_hours", "billing_value"):
+                    bucket[metric] += item[metric]
+        for bucket in [*by_project.values(), *by_department.values()]:
+            bucket["allocation_percent"] = round(
+                bucket["planned_hours"] / bucket["capacity_hours"] * 100, 2
+            ) if bucket["capacity_hours"] else 0.0
+            for key in ("capacity_hours", "planned_hours", "actual_hours", "billable_hours", "billing_value"):
+                bucket[key] = round(bucket[key], 2)
+        return {"totals": totals, "by_project": sorted(by_project.values(), key=lambda item: item["name"]),
+                "by_department": sorted(by_department.values(), key=lambda item: item["name"])}
+
+    def resource_allocation_trends(
+        self, project_code: str | None = None, date_from: str | None = None,
+        date_to: str | None = None, department: str | None = None,
+        designation: str | None = None, employee: str | None = None,
+        allocation_status: str | None = None, billable_status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Group resource hours by source period for trend charts."""
+        records = self._resource_records(
+            project_code, date_from, date_to, department, designation,
+            employee, allocation_status, billable_status,
+        )
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in records:
+            period = item.get("period_start") or str(item.get("last_updated") or "")[:10] or "Unknown"
+            bucket = grouped.setdefault(period, {"period": period, "capacity_hours": 0.0,
+                "planned_hours": 0.0, "actual_hours": 0.0, "billable_hours": 0.0, "billing_value": 0.0})
+            for metric in ("capacity_hours", "planned_hours", "actual_hours", "billable_hours", "billing_value"):
+                bucket[metric] += item[metric]
+        return [{**bucket, **{metric: round(bucket[metric], 2) for metric in bucket if metric.endswith("hours") or metric == "billing_value"}}
+                | {"utilization_percent": round(bucket["actual_hours"] / bucket["capacity_hours"] * 100, 2) if bucket["capacity_hours"] else 0.0}
+                for bucket in sorted(grouped.values(), key=lambda item: item["period"])]
+
+    def resource_allocation_conflicts(
+        self, project_code: str | None = None, date_from: str | None = None,
+        date_to: str | None = None, department: str | None = None,
+        designation: str | None = None, employee: str | None = None,
+        allocation_status: str | None = None, billable_status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return explainable resource exceptions for the dashboard."""
+        records = self._resource_records(
+            project_code, date_from, date_to, department, designation,
+            employee, allocation_status, billable_status,
+        )
+        projects_by_employee: dict[str, set[str]] = {}
+        for item in records:
+            projects_by_employee.setdefault(str(item.get("employee_id")), set()).add(str(item.get("project_code")))
+        conflicts = []
+        for item in records:
+            reasons = []
+            if item["allocation_status"] == "overallocated":
+                reasons.append("allocation above 100%")
+            if len(projects_by_employee.get(str(item.get("employee_id")), set())) > 1:
+                reasons.append("assigned to multiple projects")
+            if item["capacity_hours"] and not item.get("actual_hours"):
+                reasons.append("actual hours missing")
+            if reasons:
+                conflicts.append({**item, "reasons": reasons})
+        return conflicts
+
     def list_invoices(
         self, project_code: str | None = None, status: str | None = None,
         level: str | None = None, approval_status: str | None = None,
@@ -941,21 +1651,23 @@ class ProjectRepository:
                 results.append(item)
         return results
 
-    def invoice_pivot(self) -> list[dict[str, Any]]:
+    def invoice_pivot(self, project_code: str | None = None) -> list[dict[str, Any]]:
         """Aggregate the authoritative invoice pivot directly in SQLite."""
         self._ensure()
+        scope = "WHERE project_code = ?" if project_code else ""
         with closing(self.connect()) as db:
             rows = db.execute(
-                """SELECT COALESCE(levels,'') AS levels,COALESCE(status,'') AS status,
+                f"""SELECT COALESCE(levels,'') AS levels,COALESCE(status,'') AS status,
                           project_code,ROUND(SUM(invoice_value_usd),2) AS total
-                   FROM project_invoices
+                   FROM project_invoices {scope}
                    GROUP BY levels,status,project_code
-                   ORDER BY levels,status,project_code"""
+                   ORDER BY levels,status,project_code""",
+                (project_code,) if project_code else (),
             ).fetchall()
         grouped: dict[tuple[str, str], dict[str, float]] = {}
         for row in rows:
             key = (row["levels"], row["status"])
-            grouped.setdefault(key, {})[row["project_code"]] = row["total"]
+            grouped.setdefault(key, {})[row["project_code"]] = float(row["total"])
         return [
             {
                 "levels": levels,
@@ -1073,23 +1785,42 @@ class ProjectRepository:
             raise ValueError("Change request has already been decided")
         with closing(self.connect()) as db:
             with db:
-                db.execute(
-                    "UPDATE change_requests SET status=?, decided_by=?, decided_at=? WHERE id=?",
+                changed = db.execute(
+                    "UPDATE change_requests SET status=?, decided_by=?, decided_at=? WHERE id=? AND status='pending'",
                     (decision, actor_role, self._now(), change_id),
                 )
-                if decision == "approved":
+                if changed.rowcount != 1:
+                    raise ValueError("Change request has already been decided")
+                is_document_approval = change["action"] == "document_approval"
+                if decision == "approved" and not is_document_approval:
                     self._apply_change(db, change)
-                terminal = "ready" if decision == "approved" else "rejected"
+                terminal = "processing" if decision == "approved" and is_document_approval else (
+                    "ready" if decision == "approved" else "rejected"
+                )
                 db.execute(
                     """UPDATE ingestion_jobs SET status=?, message=?, updated_at=?
                        WHERE change_request_id=?""",
                     (terminal, f"Change {decision}", self._now(), change_id),
                 )
-                db.execute(
-                    """UPDATE documents SET status=? WHERE id IN
-                       (SELECT document_id FROM ingestion_jobs WHERE change_request_id=?)""",
-                    (terminal, change_id),
-                )
+                if is_document_approval:
+                    document_id = change["payload"].get("document_id")
+                    db.execute(
+                        """UPDATE documents SET approval_status=?,status=?,approved_by=?,approved_at=?
+                           WHERE id=?""",
+                        (
+                            "approved" if decision == "approved" else "rejected",
+                            terminal,
+                            actor_role if decision == "approved" else None,
+                            self._now() if decision == "approved" else None,
+                            document_id,
+                        ),
+                    )
+                else:
+                    db.execute(
+                        """UPDATE documents SET status=? WHERE id IN
+                           (SELECT document_id FROM ingestion_jobs WHERE change_request_id=?)""",
+                        (terminal, change_id),
+                    )
                 db.execute(
                     "INSERT INTO audit_events VALUES (?,?,?,?,?,?,?,?,?)",
                     (
@@ -1168,6 +1899,10 @@ class ProjectRepository:
             db.execute("UPDATE projects SET payload = ? WHERE code = ?", (json.dumps(project), code))
         elif action == "project_upsert":
             raise ValueError("Project upsert must use a validated Excel import payload")
+        elif action == "portfolio_import":
+            # The API applies the already-validated, transaction-safe import after
+            # this approval row has committed. Direct uploads never call this path.
+            return
         else:
             raise ValueError(f"Unsupported approved action: {action}")
 
@@ -1181,6 +1916,8 @@ class ProjectRepository:
         project["variance_pct"] = round(
             project["actual_progress"] - project["revised_progress"], 1
         )
+        project['variance_available']=project.get('status')=='active' and ('progress_fields_provided' not in project or 'revised_progress' in project['progress_fields_provided'])
+        if not project['variance_available']:project['variance_pct']=0
         if user_role == "employee":
             for person in project["contacts"]:
                 person["email"] = "restricted"

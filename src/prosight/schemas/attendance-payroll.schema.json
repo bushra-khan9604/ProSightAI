@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Attendance and Payroll Import",
+  "description": "Validated, reviewable records mapped from the Attendance and Payroll worksheets.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "attendance": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/AttendanceRecord" }
+    },
+    "payroll": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/PayrollRecord" }
+    }
+  },
+  "required": ["attendance", "payroll"],
+  "$defs": {
+    "AttendanceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timesheet_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "employee_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "project_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "work_date": { "type": "string", "format": "date" },
+        "attendance_status": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "regular_hours": { "type": "number", "minimum": 0, "maximum": 24 },
+        "ot_hours": { "type": "number", "minimum": 0, "maximum": 24 },
+        "total_hours": { "type": "number", "minimum": 0, "maximum": 24 }
+      },
+      "required": ["timesheet_id", "employee_id", "project_id", "work_date", "attendance_status", "regular_hours", "ot_hours", "total_hours"]
+    },
+    "PayrollRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "payroll_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "employee_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "project_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "month": { "type": "string", "format": "date" },
+        "basic_aed": { "type": "number", "minimum": 0 },
+        "allowance_aed": { "type": "number", "minimum": 0 },
+        "ot_hours": { "type": "number", "minimum": 0 },
+        "ot_rate_aed": { "type": "number", "minimum": 0 },
+        "ot_pay_aed": { "type": "number", "minimum": 0 },
+        "gross_aed": { "type": "number", "minimum": 0 },
+        "employer_burden_aed": { "type": "number", "minimum": 0 },
+        "total_cost_aed": { "type": "number", "minimum": 0 },
+        "payment_date": { "type": "string", "format": "date" },
+        "days_worked": { "type": "integer", "minimum": 0, "maximum": 31 },
+        "paid_leave_days": { "type": "integer", "minimum": 0, "maximum": 31 }
+      },
+      "required": ["payroll_id", "employee_id", "project_id", "month", "basic_aed", "allowance_aed", "ot_hours", "ot_rate_aed", "ot_pay_aed", "gross_aed", "employer_burden_aed", "total_cost_aed", "payment_date", "days_worked", "paid_leave_days"]
+    }
+  },
+  "x-prosight-import-kind": "attendance_payroll",
+  "x-prosight-workbook-sheets": ["Attendance", "Payroll"]
+}

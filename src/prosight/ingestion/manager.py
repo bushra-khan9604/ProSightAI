@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from functools import wraps
+from ..project_locks import project_lock
+
 import hashlib
 import logging
 import shutil
@@ -15,6 +18,24 @@ from .mapping import OpenAIColumnMapper
 from .pdf import detect_reporting_date, extract_pdf_chunks
 
 logger = logging.getLogger("prosight.ingestion")
+
+
+def _project_job(function):
+    @wraps(function)
+    def run(self, job_id, document, *args, **kwargs):
+        with project_lock(self.repository, document["project_code"]):
+            if not self.repository.get_document(document["id"]):
+                return
+            return function(self, job_id, document, *args, **kwargs)
+    return run
+
+
+def _project_upload(function):
+    @wraps(function)
+    def run(self, source, original_name, project_code, actor_role):
+        with project_lock(self.repository, project_code):
+            return function(self, source, original_name, project_code, actor_role)
+    return run
 
 
 class IngestionManager:
@@ -42,6 +63,7 @@ class IngestionManager:
         self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="prosight-ingest")
         self.repository.recover_interrupted_jobs()
 
+    @_project_upload
     def submit(
         self, source: Path, original_name: str, project_code: str, actor_role: str
     ) -> dict:
@@ -77,6 +99,7 @@ class IngestionManager:
         self.executor.submit(self._process, job["id"], document, actor_role)
         return {"document": document, "job": job}
 
+    @_project_job
     def _process(self, job_id: str, document: dict, actor_role: str) -> None:
         """Run type-specific ingestion and persist every lifecycle transition."""
         try:
@@ -102,7 +125,7 @@ class IngestionManager:
                     self.repository.update_document_date(
                         document["id"], None, fallback, "fallback"
                     )
-                    self._index_pdf(job_id, self.repository.get_document(document["id"]))
+                    self._request_document_approval(job_id, self.repository.get_document(document["id"]), actor_role)
             else:
                 preview = preview_workbook(path, document["project_code"])
                 if preview["mapping_required"]:
@@ -142,22 +165,74 @@ class IngestionManager:
         self.repository.update_document_date(
             document["id"], reporting_date, reporting_date, "confirmed"
         )
-        self.repository.update_document_status(document["id"], "processing")
-        self.repository.update_job(job_id, "processing", 50, "Report date confirmed")
-        self.executor.submit(
-            self._index_pdf, job_id, self.repository.get_document(document["id"])
+        self._request_document_approval(
+            job_id, self.repository.get_document(document["id"]), actor_role
         )
         return self.repository.get_job(job_id)
 
+    def _request_document_approval(
+        self, job_id: str, document: dict | None, actor_role: str
+    ) -> None:
+        """Create a review request; embedding is deliberately deferred until approval."""
+        if not document:
+            raise KeyError("Document not found")
+        preview = {
+            "document_id": document["id"],
+            "project_code": document["project_code"],
+            "filename": document["filename"],
+            "kind": document["kind"],
+            "checksum": document["checksum"],
+            "reporting_date": document.get("reporting_date"),
+            "effective_date": document.get("effective_date"),
+            "date_status": document.get("date_status"),
+            "approval_status": "awaiting_approval",
+            "index_status": "not_indexed",
+            "warnings": [],
+        }
+        self.repository.create_document_approval_request(
+            document, actor_role, job_id, {"before": None, "after": preview, "warnings": []}
+        )
+
+    def index_approved_document(self, change: dict) -> None:
+        """Queue embedding only after an Admin-approved document change request."""
+        payload = change.get("payload", {})
+        document_id, job_id = payload.get("document_id"), payload.get("job_id")
+        if not document_id or not job_id:
+            raise ValueError("Document approval payload is incomplete")
+        document = self.repository.get_document(document_id)
+        if not document or document.get("approval_status") != "approved":
+            raise ValueError("Document must be approved before indexing")
+        self.executor.submit(self._index_pdf, job_id, document)
+
+    def retry_indexing(self, job_id: str, actor_role: str) -> dict:
+        """Retry a failed post-approval index operation without re-approving it."""
+        if actor_role != "admin":
+            raise PermissionError("Admin approval is required to retry document indexing")
+        job = self.repository.get_job(job_id)
+        if not job or job["kind"] != "pdf":
+            raise KeyError("PDF ingestion job not found")
+        if job["status"] != "failed":
+            raise ValueError("Only failed indexing jobs can be retried")
+        document = self.repository.get_document(job["document_id"])
+        if not document or document.get("approval_status") != "approved":
+            raise ValueError("Only an approved document can be re-indexed")
+        self.repository.update_document_status(document["id"], "approved")
+        self.repository.update_document_index_status(document["id"], "queued")
+        self.executor.submit(self._index_pdf, job_id, document)
+        return self.repository.get_job(job_id)
+
+    @_project_job
     def _index_pdf(self, job_id: str, document: dict) -> None:
         """Extract, embed, and publish one date-resolved PDF."""
         try:
+            self.repository.update_document_index_status(document["id"], "indexing")
             chunks = extract_pdf_chunks(Path(document["stored_path"]), document)
             self.repository.update_job(
                 job_id, "processing", 55, f"Embedding {len(chunks)} chunks"
             )
             self.rag_store.add_chunks(chunks)
             self.repository.update_document_status(document["id"], "ready")
+            self.repository.update_document_index_status(document["id"], "ready")
             self.repository.update_job(
                 job_id, "ready", 100, f"Indexed {len(chunks)} chunks"
             )
@@ -166,7 +241,21 @@ class IngestionManager:
                 "pdf_indexing_failed",
                 extra={"job_id": job_id, "document_id": document["id"], "kind": "pdf"},
             )
-            self.repository.update_document_status(document["id"], "failed")
+            # Upserted batches can fail part-way through. Remove the whole
+            # document namespace so retries cannot expose partial evidence or
+            # duplicate vectors.
+            try:
+                self.rag_store.delete_document(document["id"])
+            except Exception:
+                logger.exception(
+                    "pdf_partial_index_cleanup_failed",
+                    extra={"job_id": job_id, "document_id": document["id"]},
+                )
+            # Approval remains valid after an embedding failure. Keep the
+            # document visible for a controlled Admin retry and never mark a
+            # partial vector set as ready.
+            self.repository.update_document_status(document["id"], "approved")
+            self.repository.update_document_index_status(document["id"], "failed")
             self.repository.update_job(
                 job_id, "failed", 100, self._failure_message(error)
             )

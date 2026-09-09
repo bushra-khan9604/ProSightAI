@@ -23,7 +23,8 @@ def main() -> None:
     host.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     if args.command == "init":
-        ProjectRepository().initialize()
+        from .db import create_repository
+        create_repository().initialize()
         print("Sample database initialized.")
     elif args.command == "ask":
         print(json.dumps(ProSightAgent().ask(args.query, args.role), indent=2))

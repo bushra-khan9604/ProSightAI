@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from ..config import get_settings
@@ -104,13 +105,27 @@ class MultiAgentOrchestrator:
         database = None
         rag = None
         route: list[str] = []
-        if "database_manager" in plan.agents:
+        wants_database = "database_manager" in plan.agents
+        wants_rag = "rag" in plan.agents and project_code and self.rag
+        if wants_database and wants_rag:
+            self._emit_status(status_callback, "checking_database")
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="prosight-query") as pool:
+                database_future = pool.submit(self.database.read, query, project_code, role)
+                rag_future = pool.submit(self.rag.retrieve, query, project_code)
+                database = database_future.result()
+                rag = rag_future.result()
+            route.extend(["database_manager", "rag"])
+            trace.event("database_query_completed", agent="database_manager",
+                        result_size=len(database.records))
+            trace.event("rag_retrieval_completed", agent="rag",
+                        result_size=len(rag.evidence))
+        elif wants_database:
             self._emit_status(status_callback, "checking_database")
             database = self.database.read(query, project_code, role)
             route.append("database_manager")
             trace.event("database_query_completed", agent="database_manager",
                         result_size=len(database.records))
-        if "rag" in plan.agents and project_code and self.rag:
+        elif wants_rag:
             self._emit_status(status_callback, "checking_database")
             rag = self.rag.retrieve(query, project_code)
             route.append("rag")

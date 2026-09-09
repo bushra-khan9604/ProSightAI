@@ -8,19 +8,21 @@ import hashlib
 import json
 import shutil
 import tempfile
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .agents import MultiAgentOrchestrator
 from .agents.rag_agent import RAGAgent
 from .config import get_settings
+from .supabase_auth import get_supabase_user
 from .ingestion import IngestionManager
 from .ingestion.excel import preview_workbook
 from .ingestion.portfolio import create_portfolio_template, parse_portfolio_workbook
@@ -37,6 +39,43 @@ PORTFOLIO_DIR = ROOT / "data" / "portfolio_imports"
 ROLES = {"project_manager", "planning_engineer", "admin"}
 CHANGE_PREVIEW_ROLES = {"project_manager", "admin"}
 PROJECT_UPDATE_ROLES = {"project_manager", "planning_engineer", "admin"}
+RESOURCE_CACHE_TTL_SECONDS = 15
+_RESOURCE_CACHE: dict[str, tuple[float, Any]] = {}
+
+
+def _resource_cache_key(endpoint: str, role: str, values: dict[str, Any]) -> str:
+    """Build a permission-aware short-lived cache key for dashboard reads."""
+    return json.dumps({"endpoint": endpoint, "role": role, **values}, sort_keys=True, default=str)
+
+
+def _resource_cached(key: str, producer: Any) -> Any:
+    """Return a cached dashboard response or compute it once for the pilot."""
+    now = time.monotonic()
+    cached = _RESOURCE_CACHE.get(key)
+    if cached and cached[0] > now:
+        return cached[1]
+    value = producer()
+    _RESOURCE_CACHE[key] = (now + RESOURCE_CACHE_TTL_SECONDS, value)
+    if len(_RESOURCE_CACHE) > 256:
+        expired = [item for item, (expires, _) in _RESOURCE_CACHE.items() if expires <= now]
+        for item in expired:
+            _RESOURCE_CACHE.pop(item, None)
+    return value
+
+
+def _clear_resource_cache() -> None:
+    """Invalidate resource summaries after an approved manpower import."""
+    _RESOURCE_CACHE.clear()
+
+
+def _mask_resource_record(item: dict[str, Any], role: str) -> dict[str, Any]:
+    """Keep operational fields visible while masking commercial rates by role."""
+    result = dict(item)
+    if role != "admin":
+        result.pop("billing_rate", None)
+        result.pop("cost_rate", None)
+        result.pop("cost_value", None)
+    return result
 
 
 class ChatHistoryMessage(BaseModel):
@@ -44,6 +83,20 @@ class ChatHistoryMessage(BaseModel):
 
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=10_000)
+
+
+class LoginRequest(BaseModel):
+    """Credentials for the local first-party login flow."""
+
+    username: str = Field(min_length=2, max_length=120)
+    password: str = Field(min_length=8, max_length=256)
+
+
+class PasswordChangeRequest(BaseModel):
+    """Current and replacement password for an authenticated user."""
+
+    current_password: str = Field(min_length=8, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
 
 
 class QueryRequest(BaseModel):
@@ -55,63 +108,7 @@ class QueryRequest(BaseModel):
     history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=10)
 
 
-class ProjectDraft(BaseModel):
-    """Validated new-project payload stored as an approval request."""
-
-    code: str = Field(pattern=r"^[A-Z0-9-]{3,30}$")
-    name: str = Field(min_length=3, max_length=200)
-    status: Literal["active", "completed", "future"]
-    client: str = Field(min_length=2, max_length=200)
-    location: str = Field(min_length=2, max_length=200)
-    contract_value_usd: float = Field(ge=0)
-    planned_start: str
-    planned_finish: str
-    revised_finish: str | None = None
-    reporting_date: str
-    baseline_progress: float = Field(ge=0, le=100)
-    revised_progress: float = Field(ge=0, le=100)
-    actual_progress: float = Field(ge=0, le=100)
-
-    @model_validator(mode="after")
-    def validate_dates(self) -> "ProjectDraft":
-        """Require ISO dates and coherent project schedule boundaries."""
-        try:
-            planned_start = date.fromisoformat(self.planned_start)
-            planned_finish = date.fromisoformat(self.planned_finish)
-            revised_finish = date.fromisoformat(self.revised_finish) if self.revised_finish else None
-            date.fromisoformat(self.reporting_date)
-        except ValueError as error:
-            raise ValueError("Project dates must use YYYY-MM-DD format") from error
-        if planned_finish < planned_start:
-            raise ValueError("Planned finish cannot be before planned start")
-        if revised_finish and revised_finish < planned_start:
-            raise ValueError("Revised finish cannot be before planned start")
-        return self
-
-
-class ProjectUpdate(BaseModel):
-    """Validated mutable fields for an existing project."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=3, max_length=200)
-    status: Literal["active", "completed", "future"]
-    client: str = Field(min_length=2, max_length=200)
-    location: str = Field(min_length=2, max_length=200)
-    contract_value_usd: float = Field(ge=0)
-    planned_start: str
-    planned_finish: str
-    revised_finish: str | None = None
-    reporting_date: str
-    baseline_progress: float = Field(ge=0, le=100)
-    revised_progress: float = Field(ge=0, le=100)
-    actual_progress: float = Field(ge=0, le=100)
-
-    @model_validator(mode="after")
-    def validate_dates(self) -> "ProjectUpdate":
-        """Apply the same date invariants as new-project creation."""
-        ProjectDraft(code="VALIDATION", **self.model_dump())
-        return self
+from .project_models import ProjectDraft, ProjectUpdate
 
 
 class DocumentDateConfirmation(BaseModel):
@@ -129,20 +126,25 @@ class Runtime:
         self.rag_store: RAGStore | None = None
         self.ingestion: IngestionManager | None = None
         try:
-            self.rag_store = RAGStore(VECTOR_DIR)
+            if getattr(repository, "backend", "sqlite") == "postgres":
+                from .rag.pgvector_store import PgVectorStore
+                self.rag_store = PgVectorStore(repository)
+            else:
+                self.rag_store = RAGStore(VECTOR_DIR)
             self.ingestion = IngestionManager(repository, self.rag_store, UPLOAD_DIR)
         except RuntimeError:
             # Queries and database features remain usable before an API key is configured.
             logging.getLogger("prosight").warning("rag_runtime_unavailable")
         self.orchestrator = MultiAgentOrchestrator(
-            repository, RAGAgent(self.rag_store) if self.rag_store else None
+            repository, RAGAgent(self.rag_store, repository) if self.rag_store else None
         )
 
 
 def create_app(repository: ProjectRepository | None = None) -> FastAPI:
     """Build an independently testable FastAPI application."""
     configure_logging()
-    runtime = Runtime(repository or ProjectRepository(DEFAULT_DB))
+    from .db import create_repository
+    runtime = Runtime(repository or create_repository())
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -150,9 +152,116 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         yield
         if runtime.ingestion:
             runtime.ingestion.close()
+        close_repository = getattr(runtime.repository, "close", None)
+        if close_repository:
+            close_repository()
 
     app = FastAPI(title="ProSight AI", version="0.2.0", lifespan=lifespan)
     app.state.runtime = runtime
+    from .agents.attachment_update import AttachmentUpdateAgent
+    from .attachment_api import attachment_router
+    runtime.attachments = AttachmentUpdateAgent(runtime.repository, runtime.ingestion, UPLOAD_DIR)
+    app.include_router(attachment_router(runtime.attachments, _clear_resource_cache))
+    from .agents.project_creation import ProjectCreationAgent
+    from .project_draft_api import project_draft_router
+    runtime.project_creation = ProjectCreationAgent(runtime.attachments)
+    app.include_router(project_draft_router(runtime.project_creation, _clear_resource_cache))
+
+    @app.middleware("http")
+    async def attach_identity(request: Request, call_next):
+        """Resolve the session once and prevent client-supplied roles in secure mode."""
+        settings = get_settings()
+        if settings.auth_provider == "supabase":
+            try:
+                user = await get_supabase_user(request.headers.get("authorization", ""), settings)
+            except HTTPException as error:
+                return JSONResponse(status_code=error.status_code, content={"detail": error.detail},
+                                    headers={"Cache-Control": "private, no-store"})
+        else:
+            user = runtime.repository.get_session_user(request.cookies.get(settings.auth_cookie_name))
+        request.state.user = user
+        public_paths = {
+            "/api/health", "/health", "/api/auth/config", "/api/auth/login", "/api/auth/me", "/api/auth/logout",
+        }
+        if (settings.auth_required or settings.auth_provider == "supabase") and request.url.path.startswith("/api/") and request.url.path not in public_paths and not user:
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"}, headers={"Cache-Control": "private, no-store"})
+        if user:
+            # Legacy query parameters remain accepted for local tests, but an authenticated
+            # request can never elevate its role through the browser.
+            from urllib.parse import parse_qsl, urlencode
+            query = parse_qsl(request.scope.get("query_string", b"").decode(), keep_blank_values=True)
+            query = [(key, value) for key, value in query if key not in {"role", "user_role"}]
+            query.extend([("role", user["role"]), ("user_role", user["role"])])
+            request.scope["query_string"] = urlencode(query).encode()
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+    @app.get("/api/auth/config")
+    def auth_config() -> dict:
+        settings = get_settings()
+        return {"provider": settings.auth_provider,
+                "url": settings.supabase_url if settings.auth_provider == "supabase" else "",
+                "publishableKey": settings.supabase_publishable_key if settings.auth_provider == "supabase" else ""}
+
+    @app.post("/api/auth/login")
+    def login(payload: LoginRequest, response: Response) -> dict:
+        """Authenticate a user and issue an opaque, revocable session cookie."""
+        if get_settings().auth_provider == "supabase":
+            raise HTTPException(400, "Sign in with Supabase using your email and password")
+        user = runtime.repository.authenticate_user(payload.username, payload.password)
+        if not user:
+            runtime.repository.record_auth_event(None, "login_failed", payload.username[:120])
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        settings = get_settings()
+        token = runtime.repository.create_session(user["id"], settings.auth_session_ttl_seconds)
+        response.set_cookie(
+            settings.auth_cookie_name,
+            token,
+            max_age=settings.auth_session_ttl_seconds,
+            httponly=True,
+            secure=settings.auth_cookie_secure,
+            # Strict prevents a cross-site browser navigation from carrying
+            # the session into a state-changing request. API clients can use
+            # the same cookie with an explicit same-origin request.
+            samesite="strict",
+            path="/",
+        )
+        runtime.repository.record_auth_event(user, "login_success")
+        return user
+
+    @app.post("/api/auth/logout")
+    def logout(request: Request, response: Response) -> dict:
+        """Revoke the current session and remove its browser cookie."""
+        settings = get_settings()
+        runtime.repository.revoke_session(request.cookies.get(settings.auth_cookie_name))
+        runtime.repository.record_auth_event(getattr(request.state, "user", None), "logout")
+        response.delete_cookie(settings.auth_cookie_name, path="/")
+        return {"ok": True}
+
+    @app.get("/api/auth/me")
+    def current_user(request: Request) -> dict:
+        """Return the current database-backed identity and role."""
+        user = getattr(request.state, "user", None)
+        if not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        return user
+
+    @app.post("/api/auth/change-password")
+    def change_password(payload: PasswordChangeRequest, request: Request) -> dict:
+        """Change a password after re-authentication."""
+        if get_settings().auth_provider == "supabase":
+            raise HTTPException(400, "Manage your password through Supabase Auth")
+        user = getattr(request.state, "user", None)
+        if not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        verified = runtime.repository.authenticate_user(user["username"], payload.current_password)
+        if not verified:
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+        runtime.repository.update_user_password(user["id"], payload.new_password)
+        runtime.repository.record_auth_event(user, "password_changed")
+        return {"ok": True}
 
     @app.get("/health")
     @app.get("/api/health")
@@ -180,7 +289,7 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         if runtime.repository.find_project(draft.code, "admin"):
             raise HTTPException(status_code=409, detail="Project code already exists")
         project = {
-            **draft.model_dump(),
+            **draft.storage_record(),
             "revised_finish": draft.revised_finish or draft.planned_finish,
             "contacts": [],
             "activities": [],
@@ -200,10 +309,12 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.post("/api/projects/import-preview", status_code=202)
     def create_project_import_preview(
+        request: Request,
         role: str = Form(...),
         file: UploadFile = File(...),
     ) -> dict:
         """Validate one canonical workbook and create an editable import preview."""
+        role = _effective_role(request, role)
         _validate_role(role)
         _require_role(role, CHANGE_PREVIEW_ROLES, "This role cannot prepare project imports")
         filename = Path(file.filename or "").name
@@ -263,7 +374,7 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             return runtime.repository.update_project(
                 project_code,
                 {
-                    **update.model_dump(),
+                    **update.storage_record(),
                     "revised_finish": update.revised_finish or update.planned_finish,
                 },
                 role,
@@ -287,7 +398,7 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             return runtime.repository.update_pending_project_change(
                 change_id,
                 {
-                    **draft.model_dump(),
+                    **draft.storage_record(),
                     "revised_finish": draft.revised_finish or draft.planned_finish,
                 },
                 role,
@@ -305,26 +416,28 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         return runtime.repository.portfolio_summary(role)
 
     @app.post("/api/query")
-    def query(payload: QueryRequest) -> dict:
+    def query(payload: QueryRequest, request: Request) -> dict:
         trace = RequestTrace()
         try:
-            _validate_role(payload.user_role)
+            actor_role = _effective_role(request, payload.user_role)
+            _validate_role(actor_role)
             trace.event(
                 "query_received",
-                role=payload.user_role,
+                role=actor_role,
+                user_id=getattr(request.state, "user", None) and request.state.user["id"],
                 project_code=payload.project_code,
                 query_preview=sanitize(payload.query),
             )
             trace.event(
                 "query_validated",
-                role=payload.user_role,
+                role=actor_role,
                 project_code=payload.project_code,
                 query_length=len(payload.query),
                 history_count=len(payload.history),
             )
             result = runtime.orchestrator.run(
                 payload.query.strip(),
-                payload.user_role,
+                actor_role,
                 payload.project_code,
                 trace,
                 [message.model_dump() for message in payload.history],
@@ -360,9 +473,10 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             ) from error
 
     @app.post("/api/query/stream")
-    async def query_stream(payload: QueryRequest) -> StreamingResponse:
+    async def query_stream(payload: QueryRequest, request: Request) -> StreamingResponse:
         """Stream real orchestration states and a final backward-compatible answer."""
-        _validate_role(payload.user_role)
+        actor_role = _effective_role(request, payload.user_role)
+        _validate_role(actor_role)
 
         def encode(event_name: str, data: dict) -> str:
             return f"event: {event_name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -382,10 +496,11 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             def report(state: str) -> None:
                 loop.call_soon_threadsafe(statuses.put_nowait, state)
 
-            trace.event("query_received", role=payload.user_role,
+            trace.event("query_received", role=actor_role,
+                        user_id=getattr(request.state, "user", None) and request.state.user["id"],
                         project_code=payload.project_code,
                         query_preview=sanitize(payload.query))
-            trace.event("query_validated", role=payload.user_role,
+            trace.event("query_validated", role=actor_role,
                         project_code=payload.project_code,
                         query_length=len(payload.query), history_count=len(payload.history))
             yield encode("meta", {"request_id": trace.request_id})
@@ -393,7 +508,7 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             try:
                 task = asyncio.create_task(asyncio.to_thread(
                     runtime.orchestrator.run,
-                    payload.query.strip(), payload.user_role, payload.project_code, trace,
+                    payload.query.strip(), actor_role, payload.project_code, trace,
                     [message.model_dump() for message in payload.history], report,
                 ))
                 while not task.done():
@@ -442,10 +557,12 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.post("/api/uploads", status_code=202)
     def upload(
+        request: Request,
         project_code: str = Form(...),
         user_role: str = Form("project_manager"),
         file: UploadFile = File(...),
     ) -> dict:
+        user_role = _effective_role(request, user_role)
         _validate_role(user_role)
         if not runtime.ingestion:
             raise HTTPException(
@@ -491,6 +608,22 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             return runtime.ingestion.confirm_pdf_date(
                 job_id, confirmation.reporting_date, role
             )
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/api/ingestion-jobs/{job_id}/retry-index")
+    def retry_document_index(job_id: str, request: Request, role: str = Query(...)) -> dict:
+        """Retry embeddings for a document approved by Admin but not indexed."""
+        role = _effective_role(request, role)
+        _validate_role(role)
+        if not runtime.ingestion:
+            raise HTTPException(status_code=503, detail="RAG runtime unavailable")
+        try:
+            return runtime.ingestion.retry_indexing(job_id, role)
         except PermissionError as error:
             raise HTTPException(status_code=403, detail=str(error)) from error
         except KeyError as error:
@@ -557,9 +690,11 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.post("/api/portfolio-imports")
     def portfolio_import(
+        request: Request,
         role: str = Form(...), dataset: str = Form("combined"),
         project_code: str | None = Form(None), file: UploadFile = File(...)
     ) -> dict:
+        role = _effective_role(request, role)
         _validate_role(role)
         _require_role(
             role, {"project_manager", "planning_engineer", "admin"},
@@ -596,7 +731,23 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
                     destination, runtime.repository.resolve_project_reference,
                     dataset, project_code
                 )
-                return runtime.repository.apply_portfolio_import(record["id"], parsed)
+                change = runtime.repository.create_change_request(
+                    "portfolio_import",
+                    project_code or "PORTFOLIO",
+                    {"import_id": record["id"], "parsed": parsed},
+                    {
+                        "before": None,
+                        "after": parsed,
+                        "warnings": [],
+                        "source_filename": filename,
+                        "dataset": dataset,
+                    },
+                    role,
+                )
+                runtime.repository.set_portfolio_import_status(
+                    record["id"], "awaiting_approval", "Portfolio preview is waiting for Admin approval"
+                )
+                return {"status": "awaiting_approval", "import": runtime.repository.get_portfolio_import(record["id"]), "change": change}
             except (ValueError, KeyError) as error:
                 failed = runtime.repository.fail_portfolio_import(record["id"], str(error))
                 raise HTTPException(
@@ -646,17 +797,111 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.get("/api/portfolio/manpower")
     def portfolio_manpower(
-        role: str = Query(...), project_code: str | None = Query(None),
+        request: Request, role: str = Query(...), project_code: str | None = Query(None),
         search: str | None = Query(None), department: str | None = Query(None),
         category: str | None = Query(None), status: str | None = Query(None),
         location: str | None = Query(None),
     ) -> list[dict]:
+        role = _effective_role(request, role)
         _validate_role(role)
         if project_code and not runtime.repository.find_project(project_code, role):
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
-        return runtime.repository.list_manpower(
+        records = runtime.repository.list_manpower(
             project_code, search, department, category, status, location
         )
+        return [_mask_resource_record(item, role) for item in records]
+
+    def _resource_request_values(
+        request: Request, role: str, project_code: str | None,
+        date_from: str | None, date_to: str | None, department: str | None,
+        designation: str | None, employee: str | None,
+        allocation_status: str | None, billable_status: str | None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Resolve role and common filters once for all resource endpoints."""
+        role = _effective_role(request, role)
+        _validate_role(role)
+        if project_code and not runtime.repository.find_project(project_code, role):
+            raise HTTPException(status_code=404, detail="Project not found or unauthorized")
+        if allocation_status and allocation_status not in {"overallocated", "underallocated", "balanced"}:
+            raise HTTPException(status_code=400, detail="Unsupported allocation status")
+        if billable_status and billable_status not in {"billable", "non_billable"}:
+            raise HTTPException(status_code=400, detail="Unsupported billable status")
+        if date_from and date_to and date_from > date_to:
+            raise HTTPException(status_code=400, detail="date_from must not be after date_to")
+        return role, {
+            "project_code": project_code, "date_from": date_from, "date_to": date_to,
+            "department": department, "designation": designation, "employee": employee,
+            "allocation_status": allocation_status, "billable_status": billable_status,
+        }
+
+    @app.get("/api/resource-allocation/summary")
+    def resource_allocation_summary(
+        request: Request, role: str = Query(...), project_code: str | None = Query(None),
+        date_from: str | None = Query(None), date_to: str | None = Query(None),
+        department: str | None = Query(None), designation: str | None = Query(None),
+        employee: str | None = Query(None), allocation_status: str | None = Query(None),
+        billable_status: str | None = Query(None),
+    ) -> dict:
+        role, values = _resource_request_values(
+            request, role, project_code, date_from, date_to, department,
+            designation, employee, allocation_status, billable_status,
+        )
+        key = _resource_cache_key("summary", role, values)
+        result = _resource_cached(key, lambda: runtime.repository.resource_allocation_summary(**values))
+        if role == "admin":
+            return result
+        return {**result, "totals": {key: value for key, value in result["totals"].items() if key != "cost_value"}}
+
+    @app.get("/api/resource-allocation/trends")
+    def resource_allocation_trends(
+        request: Request, role: str = Query(...), project_code: str | None = Query(None),
+        date_from: str | None = Query(None), date_to: str | None = Query(None),
+        department: str | None = Query(None), designation: str | None = Query(None),
+        employee: str | None = Query(None), allocation_status: str | None = Query(None),
+        billable_status: str | None = Query(None),
+    ) -> list[dict]:
+        role, values = _resource_request_values(
+            request, role, project_code, date_from, date_to, department,
+            designation, employee, allocation_status, billable_status,
+        )
+        key = _resource_cache_key("trends", role, values)
+        return _resource_cached(key, lambda: runtime.repository.resource_allocation_trends(**values))
+
+    @app.get("/api/resource-allocation/conflicts")
+    def resource_allocation_conflicts(
+        request: Request, role: str = Query(...), project_code: str | None = Query(None),
+        date_from: str | None = Query(None), date_to: str | None = Query(None),
+        department: str | None = Query(None), designation: str | None = Query(None),
+        employee: str | None = Query(None), allocation_status: str | None = Query(None),
+        billable_status: str | None = Query(None),
+    ) -> list[dict]:
+        role, values = _resource_request_values(
+            request, role, project_code, date_from, date_to, department,
+            designation, employee, allocation_status, billable_status,
+        )
+        key = _resource_cache_key("conflicts", role, values)
+        records = _resource_cached(key, lambda: runtime.repository.resource_allocation_conflicts(**values))
+        return [_mask_resource_record(item, role) for item in records]
+
+    @app.get("/api/resource-allocation/details")
+    def resource_allocation_details(
+        request: Request, role: str = Query(...), project_code: str | None = Query(None),
+        date_from: str | None = Query(None), date_to: str | None = Query(None),
+        department: str | None = Query(None), designation: str | None = Query(None),
+        employee: str | None = Query(None), allocation_status: str | None = Query(None),
+        billable_status: str | None = Query(None), limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> dict:
+        role, values = _resource_request_values(
+            request, role, project_code, date_from, date_to, department,
+            designation, employee, allocation_status, billable_status,
+        )
+        values_with_page = {**values, "limit": limit, "offset": offset}
+        key = _resource_cache_key("details", role, values_with_page)
+        result = _resource_cached(
+            key, lambda: runtime.repository.resource_allocation_details(**values_with_page)
+        )
+        return {**result, "items": [_mask_resource_record(item, role) for item in result["items"]]}
 
     @app.get("/api/projects/{project_code}/schedule")
     def project_schedule(project_code: str, role: str = Query(...)) -> list[dict]:
@@ -688,6 +933,28 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         _validate_role(role)
         return runtime.repository.invoice_pivot()
 
+    @app.delete("/api/projects/{project_code}")
+    def delete_project(project_code: str, request: Request, confirmation: str = Query(...)) -> dict:
+        # Destructive operations always require a real identity, including demo mode.
+        user = request.state.user
+        if not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        _require_role(user["role"], {"admin"}, "Only Admin can delete projects")
+        if confirmation != project_code:
+            raise HTTPException(status_code=400, detail="Type the exact project code to confirm deletion")
+        from .project_deletion import ProjectDeletion
+        try:
+            result = ProjectDeletion(runtime.repository, runtime.rag_store, UPLOAD_DIR, PORTFOLIO_DIR).delete(project_code, user["role"])
+            _clear_resource_cache()
+            return result
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Project not found") from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except Exception as error:
+            logging.getLogger("prosight").error("project_deletion_failed", extra={"error_type": type(error).__name__})
+            raise HTTPException(status_code=503, detail="Deletion could not finish. Retry after checking storage and database availability.") from error
+
     @app.delete("/api/documents/{document_id}")
     def delete_document(document_id: str, role: str = Query(...)) -> dict:
         _validate_role(role)
@@ -705,6 +972,8 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
     def change_request(change_id: str, role: str = Query("project_manager")) -> dict:
         _validate_role(role)
         change = runtime.repository.get_change_request(change_id)
+        if change and change.get("action") in {"attachment_update", "natural_project_create"}:
+            raise HTTPException(403, "Use the authenticated AI Assistant workspace to view this preview")
         if not change:
             raise HTTPException(status_code=404, detail="Change request not found")
         return change
@@ -731,24 +1000,49 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.get("/api/approvals")
     def approvals(
-        role: str = Query(...), status: Literal["pending"] = Query("pending")
+        request: Request, role: str = Query(...), status: Literal["pending"] = Query("pending")
     ) -> dict:
         _validate_role(role)
         _require_role(role, {"admin"}, "Only Admin can access the approval queue")
-        return {"items": runtime.repository.list_pending_approvals()}
+        items = runtime.repository.list_pending_approvals()
+        if not request.state.user or request.state.user.get("role") != "admin":
+            items = [item for item in items if item.get("action") not in {"attachment_update", "natural_project_create"}]
+        return {"items": items}
 
     @app.post("/api/change-requests/{change_id}/{decision}")
     def decide_change(
         change_id: str,
         decision: Literal["approve", "reject"],
+        request: Request,
         role: str = Query(...),
     ) -> dict:
         _validate_role(role)
         _require_role(role, {"admin"}, "Only Admin can approve or reject changes")
         try:
-            return runtime.repository.decide_change_request(
+            candidate = runtime.repository.get_change_request(change_id)
+            if candidate and candidate.get("action") in {"attachment_update", "natural_project_create"}:
+                raise HTTPException(409, "Review and approve this attachment in AI Assistant using its saved preview")
+            result = runtime.repository.decide_change_request(
                 change_id, "approved" if decision == "approve" else "rejected", role
             )
+            if result.get("action") == "portfolio_import":
+                import_id = result.get("payload", {}).get("import_id")
+                if decision == "approve":
+                    imported = runtime.repository.apply_portfolio_import(
+                        import_id, result["payload"].get("parsed", {})
+                    )
+                    _clear_resource_cache()
+                    result["import"] = imported
+                elif import_id:
+                    result["import"] = runtime.repository.set_portfolio_import_status(
+                        import_id, "rejected", "Portfolio import was rejected by Admin"
+                    )
+            if result.get("action") == "document_approval" and decision == "approve":
+                if not runtime.ingestion:
+                    raise HTTPException(status_code=503, detail="RAG runtime unavailable")
+                runtime.ingestion.index_approved_document(result)
+                result["indexing"] = "queued"
+            return result
         except PermissionError as error:
             raise HTTPException(status_code=403, detail=str(error)) from error
         except KeyError as error:
@@ -767,6 +1061,16 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         raise HTTPException(status_code=404, detail="Frontend build not found")
 
     return app
+
+
+def _effective_role(request: Request, submitted_role: str | None) -> str:
+    """Use the session's database role; accept submitted roles only in local compatibility mode."""
+    user = getattr(request.state, "user", None)
+    if user:
+        return user["role"]
+    if get_settings().auth_required or get_settings().auth_provider == "supabase":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return submitted_role or "project_manager"
 
 
 def _validate_role(role: str) -> None:

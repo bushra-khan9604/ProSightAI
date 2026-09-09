@@ -18,6 +18,11 @@ reviewed Excel imports, a React command center, and traceable OpenAI agents.
 
 ## Quick start
 
+For the configured Supabase PostgreSQL and pgvector backend, follow
+[the database setup guide](docs/postgres-pgvector.md). Its migration and data import
+have already been applied; do not run the SQLite initialization below or overwrite
+your existing `.env` when using that backend.
+
 Install Python 3.11+ dependencies and initialize the sample database:
 
 ```powershell
@@ -81,6 +86,17 @@ The React AI Assistant and all named LLM agents use `gpt-5.6-luna`. PDF chunks
 use `text-embedding-3-small` and persistent local Chroma storage. Secrets are
 read from the ignored `.env` file and must never be committed.
 
+### Authentication
+
+The app uses Supabase email/password authentication with protected workspace
+routes and server-verified roles. The existing **ProSight AI** Supabase project
+is configured in the local `.env`. Create the first Auth user and assign
+`app_metadata.prosight_role` before signing in.
+
+See [Supabase authentication setup](docs/supabase-auth.md) for account provisioning,
+configuration, protected routes, and verification. Existing local accounts are
+available only when `PROSIGHT_AUTH_PROVIDER=local` is explicitly selected.
+
 Supported provider values are `openai`, `local`, and `auto`. OpenAI is the only
 LLM provider. The deterministic `local` mode exists solely for offline tests and
 direct database responses; it is not a language model.
@@ -89,9 +105,9 @@ direct database responses; it is not a language model.
 
 1. Open **AI Assistant**, select a project, and choose **Upload Center**.
 2. Upload a searchable `.pdf` (20 MB maximum) or `.xlsx` (10 MB maximum).
-3. PDF jobs extract pages, generate embeddings, and become queryable with page citations.
+3. PDF jobs validate metadata and stop at `awaiting_approval`; they do not create embeddings yet.
 4. Excel jobs create a validation preview and stop at `awaiting_approval`.
-5. Switch the demonstration role to **Admin** to approve or reject the import.
+5. Sign in as **Admin** to approve or reject the request. Approved PDFs then queue embedding and become queryable with page citations.
 
 Scanned/encrypted PDFs, macro-enabled workbooks, legacy Excel formats, and
 workbooks over 10,000 populated rows are rejected in this version.

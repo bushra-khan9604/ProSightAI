@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "active"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actual_progress": {
+            "type": "number"
+          },
+          "reporting_date": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "actual_progress",
+          "reporting_date"
+        ]
+      }
+    }
+  ],
+  "description": "Validated new-project payload stored as an approval request.",
+  "properties": {
+    "code": {
+      "pattern": "^[A-Z0-9-]{3,30}$",
+      "title": "Code",
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 200,
+      "minLength": 3,
+      "title": "Name",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "completed",
+        "future"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "client": {
+      "maxLength": 200,
+      "minLength": 2,
+      "title": "Client",
+      "type": "string"
+    },
+    "location": {
+      "maxLength": 200,
+      "minLength": 2,
+      "title": "Location",
+      "type": "string"
+    },
+    "contract_value_usd": {
+      "minimum": 0,
+      "title": "Contract Value Usd",
+      "type": "number"
+    },
+    "planned_start": {
+      "title": "Planned Start",
+      "type": "string"
+    },
+    "planned_finish": {
+      "title": "Planned Finish",
+      "type": "string"
+    },
+    "revised_finish": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Revised Finish"
+    },
+    "reporting_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reporting Date"
+    },
+    "baseline_progress": {
+      "anyOf": [
+        {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Baseline Progress"
+    },
+    "revised_progress": {
+      "anyOf": [
+        {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Revised Progress"
+    },
+    "actual_progress": {
+      "anyOf": [
+        {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actual Progress"
+    }
+  },
+  "required": [
+    "code",
+    "name",
+    "status",
+    "client",
+    "location",
+    "contract_value_usd",
+    "planned_start",
+    "planned_finish"
+  ],
+  "title": "ProjectDraft",
+  "type": "object"
+}

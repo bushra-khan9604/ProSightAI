@@ -9,11 +9,18 @@ from typing import Any, Callable
 
 from openpyxl import Workbook, load_workbook
 
+from .schemas import normalize_header, semantic_match_headers
+
 
 MANPOWER_HEADERS = [
     "Sr.no", "EMP Code", "Name", "Designation", "Department",
     "Mobilized Project", "Current Project", "Category", "Current Location",
     "Allocation", "Status", "Leave Balance", "Remarks",
+]
+MANPOWER_OPTIONAL_HEADERS = [
+    "Period Start", "Period End", "Capacity Hours", "Planned Hours",
+    "Actual Hours", "Billable Hours", "Leave Hours", "Allocation Percent",
+    "Billing Rate", "Cost Rate", "Revision",
 ]
 SCHEDULE_HEADERS = [
     "Activity ID", "Activity Name", "Start", "Finish", "Original Duration",
@@ -72,6 +79,52 @@ MANPOWER_FIELD_MAP = {
     "Leave Balance": "leave_balance", "Remarks": "remarks",
 }
 
+# The importer accepts common construction/finance labels while preserving
+# the existing canonical template. Ambiguous or genuinely missing fields are
+# reported for Admin mapping review rather than guessed.
+PORTFOLIO_HEADER_ALIASES = {
+    "EMP Code": {"employee id", "employee code", "staff id", "person id"},
+    "Name": {"employee name", "full name", "staff name"},
+    "Mobilized Project": {"mobilized project code", "mobilized to", "mobilized project"},
+    "Current Project": {"current project code", "assigned project", "project code"},
+    "Current Location": {"location", "work location"},
+    "Allocation": {"allocation percent", "allocation percentage", "allocation hours"},
+    "Leave Balance": {"leave days", "remaining leave", "leave balance"},
+    "Period Start": {"start date", "period start", "week start", "month start"},
+    "Period End": {"end date", "period end", "week end", "month end"},
+    "Capacity Hours": {"capacity", "capacity hrs", "available hours", "working hours"},
+    "Planned Hours": {"planned hours", "planned hrs", "forecast hours", "budgeted hours"},
+    "Actual Hours": {"actual hours", "actual hrs", "worked hours", "timesheet hours"},
+    "Billable Hours": {"billable hours", "billable hrs", "chargeable hours"},
+    "Leave Hours": {"leave hours", "absence hours"},
+    "Allocation Percent": {"allocation %", "allocation percent", "allocation percentage"},
+    "Billing Rate": {"billing rate", "bill rate", "charge rate"},
+    "Cost Rate": {"cost rate", "labor cost rate"},
+    "Revision": {"revision", "version"},
+    "Activity ID": {"activity id", "activity code", "task id", "task code"},
+    "Activity Name": {"activity", "task", "task name", "description"},
+    "Start": {"start date", "planned start", "baseline start", "current start"},
+    "Finish": {"finish date", "end date", "planned finish", "baseline finish", "current finish"},
+    "Original Duration": {"duration", "duration days", "original duration days"},
+    "Draft/ Prof. INV no.": {"draft invoice number", "proforma invoice number", "invoice number", "invoice id"},
+    "Job No": {"job number", "job code", "work order", "work order number"},
+    "SAP PO No#": {"po number", "purchase order", "purchase order number"},
+    "Contract": {"contract reference", "contract number"},
+    "Work Description": {"description", "scope", "work description"},
+    "Invoice Value Excl. VAT (USD)": {"amount excluding tax usd", "amount excluding vat usd", "invoice amount usd", "net amount usd"},
+    "Invoice Value Excl. VAT (AED)": {"amount excluding tax aed", "amount excluding vat aed", "invoice amount aed", "net amount aed"},
+    "Submission Date/ Status Change Date": {"submission date", "status change date"},
+    "Expected Remittance Date": {"expected payment date", "expected remittance date"},
+    "INVOICE STATUS": {"invoice status", "status"},
+    "INVOICE Approval STATUS": {"invoice approval status", "approval status"},
+    "Invoice PAYMENT Status (Ref)": {"payment status", "invoice payment status"},
+    "Client Ref": {"client reference", "client ref"},
+    "Payment Terms (Days)": {"payment terms", "payment terms days"},
+    "Risk Profile": {"risk", "risk profile"},
+    "Reason for Rejection": {"rejection reason", "reason for rejection"},
+    "Project": {"project code", "project name", "project"},
+}
+
 
 def _value(value: Any) -> Any:
     if isinstance(value, datetime):
@@ -108,16 +161,35 @@ def _date(value: Any, label: str, row: int) -> str | None:
     raise ValueError(f"{label} row {row}: invalid date {value!r}")
 
 
-def _headers(sheet: Any, expected: list[str]) -> None:
-    actual = [str(cell.value or "").strip() for cell in next(sheet.iter_rows(max_row=1))]
-    missing = [header for header in expected if header not in actual]
+def _semantic_headers(
+    sheet: Any, expected: list[str], optional: list[str] | None = None
+) -> tuple[list[str], int, dict[str, Any]]:
+    """Find a likely header row and map equivalent labels to canonical names."""
+    optional = optional or []
+    all_expected = [*expected, *optional]
+    best: tuple[int, list[str], int, dict[str, Any]] | None = None
+    for row_number, values in enumerate(sheet.iter_rows(min_row=1, max_row=min(sheet.max_row or 1, 10), values_only=True), start=1):
+        actual = [str(value or "").strip() for value in values]
+        mapped, mapping = semantic_match_headers(actual, all_expected, PORTFOLIO_HEADER_ALIASES)
+        required_missing = [field for field in expected if field not in mapping["matches"]]
+        mapping["missing"] = required_missing
+        mapping["optional_missing"] = [field for field in optional if field not in mapping["matches"]]
+        mapping["mapping_required"] = bool(required_missing)
+        score = len(mapping["matches"])
+        if best is None or score > best[0]:
+            best = (score, mapped, row_number, mapping)
+    if best is None or best[0] == 0:
+        raise ValueError(f"{sheet.title} does not contain a recognizable header row")
+    missing = best[3]["missing"]
     if missing:
-        raise ValueError(f"{sheet.title} is missing columns: {', '.join(missing)}")
+        raise ValueError(
+            f"{sheet.title} requires Admin mapping for missing fields: {', '.join(missing)}"
+        )
+    return best[1], best[2], best[3]
 
 
-def _records(sheet: Any) -> list[tuple[int, dict[str, Any]]]:
-    rows = sheet.iter_rows(values_only=True)
-    headers = [str(value or "").strip() for value in next(rows)]
+def _records(sheet: Any, headers: list[str], header_row: int) -> list[tuple[int, dict[str, Any]]]:
+    rows = sheet.iter_rows(min_row=header_row + 1, values_only=True)
     return [
         (number, {header: _value(value) for header, value in zip(headers, values)})
         for number, values in enumerate(rows, start=2)
@@ -148,17 +220,21 @@ def parse_portfolio_workbook(
         manpower_sheet = workbook["Manpower"] if dataset in {"combined", "manpower"} else None
         invoice_sheet = workbook["Projects Invoices"] if dataset in {"combined", "invoices"} else None
         schedule_sheet = workbook["Project Schedule"] if dataset == "schedule" else None
+        mappings: dict[str, Any] = {}
+        manpower_headers = invoice_headers = schedule_headers = None
         if manpower_sheet:
-            _headers(manpower_sheet, MANPOWER_HEADERS)
+            manpower_headers, manpower_row, mappings["manpower"] = _semantic_headers(
+                manpower_sheet, MANPOWER_HEADERS, MANPOWER_OPTIONAL_HEADERS
+            )
         if invoice_sheet:
-            _headers(invoice_sheet, INVOICE_HEADERS)
+            invoice_headers, invoice_row, mappings["invoice"] = _semantic_headers(invoice_sheet, INVOICE_HEADERS)
         if schedule_sheet:
-            _headers(schedule_sheet, SCHEDULE_HEADERS)
+            schedule_headers, schedule_row, mappings["schedule"] = _semantic_headers(schedule_sheet, SCHEDULE_HEADERS)
             if not project_code or not resolve_project(project_code):
                 raise ValueError("Project Schedule requires an authorized project")
 
         manpower, employee_keys = [], set()
-        for row_number, source in _records(manpower_sheet) if manpower_sheet else []:
+        for row_number, source in _records(manpower_sheet, manpower_headers, manpower_row) if manpower_sheet else []:
             emp_code = str(source.get("EMP Code") or "").strip()
             if not emp_code:
                 raise ValueError(f"Manpower row {row_number}: EMP Code is required")
@@ -176,13 +252,29 @@ def parse_portfolio_workbook(
             record.update(
                 emp_code=emp_code, current_project_code=current,
                 mobilized_project_code=mobilized,
-                allocation=str(source.get("Allocation") or "").strip() or None,
+                allocation=str(source.get("Allocation") or source.get("Allocation Percent") or "").strip() or None,
                 leave_balance=_decimal(source.get("Leave Balance"), "Leave Balance", row_number),
+                employee_id=emp_code,
+                period_start=_date(source.get("Period Start"), "Period Start", row_number),
+                period_end=_date(source.get("Period End"), "Period End", row_number),
+                capacity_hours=_decimal(source.get("Capacity Hours"), "Capacity Hours", row_number),
+                planned_hours=_decimal(source.get("Planned Hours"), "Planned Hours", row_number),
+                actual_hours=_decimal(source.get("Actual Hours"), "Actual Hours", row_number),
+                billable_hours=_decimal(source.get("Billable Hours"), "Billable Hours", row_number),
+                leave_hours=_decimal(source.get("Leave Hours"), "Leave Hours", row_number),
+                allocation_percent=_decimal(
+                    source.get("Allocation Percent") or source.get("Allocation"),
+                    "Allocation Percent", row_number,
+                ),
+                billing_rate=_decimal(source.get("Billing Rate"), "Billing Rate", row_number),
+                cost_rate=_decimal(source.get("Cost Rate"), "Cost Rate", row_number),
+                revision=str(source.get("Revision") or "").strip() or None,
+                source_sheet=manpower_sheet.title, source_row=row_number,
             )
             manpower.append(record)
 
         invoices, invoice_keys = [], set()
-        for row_number, source in _records(invoice_sheet) if invoice_sheet else []:
+        for row_number, source in _records(invoice_sheet, invoice_headers, invoice_row) if invoice_sheet else []:
             job_number = str(source.get("Job No") or "").strip()
             draft_number = str(source.get("Draft/ Prof. INV no.") or "").strip()
             if not job_number or not draft_number:
@@ -223,11 +315,12 @@ def parse_portfolio_workbook(
                     source.get("Invoice Value Excl. VAT (AED)"),
                     "Invoice Value Excl. VAT (AED)", row_number,
                 ),
+                source_sheet=invoice_sheet.title, source_row=row_number,
             )
             invoices.append(record)
 
         schedule, activity_keys = [], set()
-        for row_number, source in _records(schedule_sheet) if schedule_sheet else []:
+        for row_number, source in _records(schedule_sheet, schedule_headers, schedule_row) if schedule_sheet else []:
             activity_id = str(source.get("Activity ID") or "").strip()
             activity_name = str(source.get("Activity Name") or "").strip()
             if not activity_id or not activity_name:
@@ -257,6 +350,7 @@ def parse_portfolio_workbook(
                 "project_code": project_code, "activity_id": activity_id,
                 "activity_name": activity_name, "start": start, "finish": finish,
                 "original_duration": int(duration),
+                "source_sheet": schedule_sheet.title, "source_row": row_number,
             })
 
         return {
@@ -265,6 +359,7 @@ def parse_portfolio_workbook(
             "schedule": schedule,
             "counts": {"manpower": len(manpower), "invoices": len(invoices),
                        "schedule": len(schedule)},
+            "semantic_mappings": mappings,
         }
     finally:
         workbook.close()

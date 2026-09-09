@@ -1,3 +1,40 @@
+import { authenticatedFetch as fetch, getAuthClient } from "./auth";
+
+export async function getCurrentUser() {
+  const response = await fetch("/api/auth/me");
+  if (response.status === 401) return null;
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail || "Could not verify your access. Please retry.");
+  return payload;
+}
+
+export async function login(username, password) {
+  const client = await getAuthClient();
+  if (client) {
+    const { error } = await client.auth.signInWithPassword({ email: username.trim(), password });
+    if (error) throw error;
+    return getCurrentUser();
+  }
+  const response = await fetch("/api/auth/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail || "Invalid username or password");
+  return payload;
+}
+
+export async function logout() {
+  const client = await getAuthClient();
+  if (client) {
+    const { error } = await client.auth.signOut({ scope: "local" });
+    if (error) throw error;
+  } else {
+    const response = await fetch("/api/auth/logout", { method: "POST" });
+    if (!response.ok) throw new Error("Sign out failed. Please retry.");
+  }
+}
+
 /** Fetch projects after the backend has applied role-based field filtering. */
 export async function getProjects(role) {
   const response = await fetch(`/api/projects?role=${encodeURIComponent(role)}`);
@@ -136,6 +173,38 @@ export async function getPortfolioManpower(role, projectCode = "") {
   return response.json();
 }
 
+function resourceQuery(role, filters = {}) {
+  const query = new URLSearchParams({ role });
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") query.set(key, value);
+  });
+  return query.toString();
+}
+
+export async function getResourceAllocationSummary(role, filters = {}) {
+  const response = await fetch(`/api/resource-allocation/summary?${resourceQuery(role, filters)}`);
+  if (!response.ok) throw new Error("Could not load resource allocation summary");
+  return response.json();
+}
+
+export async function getResourceAllocationTrends(role, filters = {}) {
+  const response = await fetch(`/api/resource-allocation/trends?${resourceQuery(role, filters)}`);
+  if (!response.ok) throw new Error("Could not load resource allocation trends");
+  return response.json();
+}
+
+export async function getResourceAllocationConflicts(role, filters = {}) {
+  const response = await fetch(`/api/resource-allocation/conflicts?${resourceQuery(role, filters)}`);
+  if (!response.ok) throw new Error("Could not load resource allocation conflicts");
+  return response.json();
+}
+
+export async function getResourceAllocationDetails(role, filters = {}, limit = 100, offset = 0) {
+  const response = await fetch(`/api/resource-allocation/details?${resourceQuery(role, { ...filters, limit, offset })}`);
+  if (!response.ok) throw new Error("Could not load resource allocation details");
+  return response.json();
+}
+
 export async function getPortfolioInvoices(role, projectCode = "") {
   const query = new URLSearchParams({ role });
   if (projectCode) query.set("project_code", projectCode);
@@ -239,5 +308,21 @@ export async function confirmDocumentDate(jobId, reportingDate, role) {
   });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.detail || "Could not confirm report date");
+  return payload;
+}
+
+export async function retryDocumentIndex(jobId, role) {
+  const response = await fetch(`/api/ingestion-jobs/${jobId}/retry-index?role=${encodeURIComponent(role)}`, {
+    method: "POST",
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || "Could not retry document indexing");
+  return payload;
+}
+
+export async function deleteProject(code, confirmation) {
+  const response = await fetch(`/api/projects/${encodeURIComponent(code)}?confirmation=${encodeURIComponent(confirmation)}`, {method: "DELETE"});
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || "Could not delete project");
   return payload;
 }

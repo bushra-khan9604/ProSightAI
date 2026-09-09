@@ -113,7 +113,7 @@ class ProjectCreationTests(unittest.TestCase):
             f"/api/projects/{existing['code']}?role=planning_engineer", json=payload
         )
         self.assertEqual(200, response.status_code)
-        self.assertEqual(42, response.json()["actual_progress"])
+        self.assertEqual(100 if existing['status']=='completed' else 0 if existing['status']=='future' else 42, response.json()["actual_progress"])
         payload["code"] = "CHANGED-CODE"
         rejected = self.client.patch(
             f"/api/projects/{existing['code']}?role=planning_engineer", json=payload

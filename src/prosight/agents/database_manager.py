@@ -17,12 +17,18 @@ class DatabaseManagerAgent:
         self.repository = repository
 
     def read(self, query: str, project_code: str | None, role: str) -> DatabaseEvidence:
-        """Execute a role-filtered semantic read against SQLite.
+        """Execute a role-filtered read against the configured database.
 
         The agent never accepts SQL from a model. It selects an allowlisted
         repository operation and returns the stored project payload as typed
         evidence for the Writer Agent.
         """
+        if role not in {"admin", "project_manager", "planning_engineer", "employee"}:
+            raise PermissionError("Unknown role")
+        if project_code:
+            project = self.repository.find_project(project_code, role)
+            if not project or project["code"] != project_code:
+                return DatabaseEvidence(summary="Project was not found")
         normalized = query.casefold()
         detailed_schedule = any(term in normalized for term in (
             "project schedule", "activity id", "original duration",
@@ -49,9 +55,10 @@ class DatabaseManagerAgent:
                 summary=f"Found {len(activities)} project schedule activities",
             )
         if any(term in normalized for term in ("invoice", "payment", "remittance", "aging", "risk profile")):
-            invoices = self.repository.list_invoices(project_code)
             if "pivot" in normalized:
-                invoices = self.repository.invoice_pivot()
+                invoices = self.repository.invoice_pivot(project_code)
+            else:
+                invoices = self.repository.list_invoices(project_code)
             return DatabaseEvidence(
                 records=invoices,
                 evidence=[
@@ -66,6 +73,12 @@ class DatabaseManagerAgent:
             )
         if any(term in normalized for term in ("manpower", "workforce", "employee", "allocation")):
             manpower = self.repository.list_manpower(project_code)
+            if role != "admin":
+                manpower = [
+                    {key: value for key, value in item.items()
+                     if key not in {"billing_rate", "cost_rate", "cost_value"}}
+                    for item in manpower
+                ]
             return DatabaseEvidence(
                 records=manpower,
                 evidence=[
@@ -113,7 +126,9 @@ class DatabaseManagerAgent:
         self, operation: ChangeOperation, requested_by: str
     ) -> DatabaseEvidence:
         """Persist a validated change preview; execution always requires Admin approval."""
-        before = self.repository.find_project(operation.project_code, "admin")
+        if requested_by not in {"admin", "project_manager"}:
+            raise PermissionError("This role cannot prepare database changes")
+        before = self.repository.find_project(operation.project_code, requested_by)
         if operation.action == "record_delete":
             after = None
         else:

@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "FieldMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Description",
+          "type": "string"
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Aliases",
+          "type": "array"
+        },
+        "column": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "infer_unlabeled": {
+          "default": false,
+          "title": "Infer Unlabeled",
+          "type": "boolean"
+        },
+        "value_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Value Map",
+          "type": "object"
+        },
+        "progress_unit": {
+          "default": "excel",
+          "enum": [
+            "excel",
+            "percent",
+            "fraction"
+          ],
+          "title": "Progress Unit",
+          "type": "string"
+        },
+        "source_currency": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z]{3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Currency"
+        },
+        "usd_rate": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1000000,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usd Rate"
+        }
+      },
+      "title": "FieldMapping",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "profile_id": {
+      "maxLength": 80,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "title": "Profile Id",
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "sheet": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "default": 0,
+      "title": "Sheet"
+    },
+    "header_row": {
+      "anyOf": [
+        {
+          "maximum": 30,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Header Row"
+    },
+    "data_start_row": {
+      "anyOf": [
+        {
+          "maximum": 2000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Data Start Row"
+    },
+    "date_format": {
+      "default": "iso",
+      "enum": [
+        "iso",
+        "day_first",
+        "month_first"
+      ],
+      "title": "Date Format",
+      "type": "string"
+    },
+    "fields": {
+      "additionalProperties": {
+        "$ref": "#/$defs/FieldMapping"
+      },
+      "propertyNames": {
+        "enum": [
+          "actual_progress",
+          "baseline_progress",
+          "client",
+          "code",
+          "contract_value_usd",
+          "location",
+          "name",
+          "planned_finish",
+          "planned_start",
+          "reporting_date",
+          "revised_finish",
+          "revised_progress",
+          "status"
+        ]
+      },
+      "required": [
+        "code",
+        "name"
+      ],
+      "title": "Fields",
+      "type": "object"
+    }
+  },
+  "required": [
+    "profile_id",
+    "name",
+    "fields"
+  ],
+  "title": "ProjectMapping",
+  "type": "object"
+}

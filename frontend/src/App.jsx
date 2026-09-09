@@ -1,3 +1,5 @@
+import {useAssistantWorkflows, WorkflowMessages, WorkflowComposer, ChatUpload, isCreation} from "./AssistantWorkflows";
+import AttachmentWorkspace from "./AttachmentWorkspace";
 import { useEffect, useRef, useState } from "react";
 import {
   Activity, Bell, BookOpen, Bot, BriefcaseBusiness, Building2,
@@ -10,13 +12,18 @@ import {
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  askAgent, askAgentStream, clearFailedIngestionJob, confirmDocumentDate, createProjectImportPreview, createProjectPreview,
-  decideChange, deleteDocument, getChangeRequest, getDocuments, getIngestionJob,
+  askAgent, askAgentStream, clearFailedIngestionJob, confirmDocumentDate, createProjectImportPreview, createProjectPreview, retryDocumentIndex,
+  decideChange, deleteDocument, deleteProject, getChangeRequest, getDocuments, getIngestionJob,
   getApprovals, getInvoicePivot, getNotifications, getPortfolioInvoices, getProjectSchedule,
-  getPortfolioManpower, getProjectIngestionJobs, getProjects, markAllNotificationsRead,
+  getPortfolioManpower, getProjectIngestionJobs, getProjects, getResourceAllocationConflicts,
+  getResourceAllocationDetails, getResourceAllocationSummary, getResourceAllocationTrends,
+  markAllNotificationsRead,
   markNotificationRead, portfolioTemplateUrl, updateProject, updateProjectImport,
   uploadPortfolioWorkbook, uploadProjectFile,
+  getCurrentUser, login as loginUser, logout as logoutUser,
 } from "./api";
+
+import { getAuthClient, downloadTemplate } from "./auth";
 
 const roles = {
   "Project Manager": "project_manager",
@@ -83,6 +90,19 @@ const roleOptions = [
 
 const money = (value) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
+const metricNumber = (value) => new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(Number(value) || 0);
+const metricMoney = (value) => money(Number(value) || 0);
+function downloadResourceCsv(items) {
+  const fields = ["employee_name", "employee_id", "designation", "department", "project_code", "capacity_hours", "planned_hours", "actual_hours", "billable_hours", "allocation_percent", "utilization_percent", "billing_value", "allocation_status", "last_updated"];
+  const escape = value => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const csv = [fields.join(","), ...items.map(item => fields.map(field => escape(item[field])).join(","))].join("\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `resource-allocation-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 const splitTableRow=(line)=>{
   const source=line.trim().replace(/^\|/,"").replace(/\|$/,"");
@@ -142,13 +162,47 @@ function AssistantText({ content }) {
   })}</div>;
 }
 
+function LandingPage({ onLogin }) {
+  return <div className="public-shell">
+    <header className="public-nav">
+      <div className="public-brand"><img src="/prosight-logo.svg" alt="ProSight AI"/><span>ProSight AI<small>Construction intelligence</small></span></div>
+      <button className="public-login" onClick={onLogin}>Sign in <ChevronRight size={16}/></button>
+    </header>
+    <main className="landing-page">
+      <section className="landing-hero">
+        <div className="landing-copy"><span className="eyebrow"><Sparkles size={14}/> Project intelligence, grounded in your data</span>
+          <h1>Build with a clearer view of what happens next.</h1>
+          <p>ProSight AI brings project progress, manpower, schedules, documents, and commercial signals into one calm command center.</p>
+          <button className="landing-cta" onClick={onLogin}>Open command center <ChevronRight size={17}/></button>
+          <div className="landing-trust"><span><Check size={14}/> Evidence-backed answers</span><span><Check size={14}/> Approval-first updates</span><span><Check size={14}/> Role-aware access</span></div>
+        </div>
+        <div className="landing-visual"><div className="visual-glow"/><div className="hero-window"><div className="window-bar"><i/><i/><i/><span>Project command center</span></div><div className="window-content"><div className="mini-kpis"><b>18 <small>Active projects</small></b><b>92% <small>On schedule</small></b><b>$24.8M <small>Portfolio value</small></b></div><div className="mini-chart"><div className="chart-line"/><span>Progress signal</span></div><div className="mini-alert"><span><Activity size={14}/> Focus area</span><b>3 projects need attention</b></div></div></div></div>
+      </section>
+      <section className="landing-features"><div><span className="feature-icon"><Bot size={18}/></span><b>Ask your project data</b><p>Get direct answers with source context and citations.</p></div><div><span className="feature-icon"><FileSpreadsheet size={18}/></span><b>Turn sheets into insight</b><p>Review semantic imports before they touch the database.</p></div><div><span className="feature-icon"><ShieldCheckIcon/></span><b>Stay in control</b><p>Roles, approvals, and audit trails at every important step.</p></div></section>
+    </main>
+  </div>;
+}
+
+function ShieldCheckIcon(){ return <Check size={18}/>; }
+
+function LoginPage({ onBack, onLoggedIn }) {
+  const [supabase,setSupabase]=useState(true);
+  useEffect(()=>{getAuthClient().then(client=>setSupabase(Boolean(client))).catch(err=>setError(err.message))},[]);
+  const [username,setUsername]=useState(""),[password,setPassword]=useState(""),[error,setError]=useState(""),[loading,setLoading]=useState(false);
+  async function submit(event){
+    event.preventDefault();setError("");setLoading(true);
+    try{onLoggedIn(await loginUser(username,password));}catch(err){setError(err.message);}finally{setLoading(false);}
+  }
+  return <div className="auth-shell"><div className="auth-panel"><button className="auth-back" onClick={onBack}><ChevronRight size={15} style={{transform:"rotate(180deg)"}}/> Back to home</button><div className="auth-logo"><img src="/prosight-logo.svg" alt="ProSight AI"/></div><span className="eyebrow">Secure project workspace</span><h1>Welcome back.</h1><p>Sign in to your ProSight command center.</p><form onSubmit={submit}><label>{supabase?"Email":"Username"}<input type={supabase?"email":"text"} autoComplete="username" value={username} onChange={event=>setUsername(event.target.value)} placeholder={supabase?"you@company.com":"Your username"} required/></label><label>Password<input autoComplete="current-password" type="password" value={password} onChange={event=>setPassword(event.target.value)} placeholder="Your password" required/></label>{error&&<div className="auth-error" role="alert">{error}</div>}<button className="landing-cta auth-submit" disabled={loading}>{loading?"Signing in…":"Sign in"}<ChevronRight size={17}/></button></form><small className="auth-note">Your role and project access are assigned by ProSight administration.</small></div><div className="auth-side"><span className="eyebrow"><Sparkles size={14}/> Trusted project intelligence</span><h2>One reliable view for every project decision.</h2><p>Keep documents, progress signals, schedules, and commercial actions connected—with a human approval step when it matters.</p></div></div>;
+}
+
 /** Render the health classification derived from project progress variance. */
 function Status({ project }) {
   const risk = project.variance_pct <= -3;
   return <span className={`status ${risk ? "risk" : "success"}`}>{risk ? "At risk" : "On track"}</span>;
 }
 
-function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, setRole, refreshProjects, onActivityCleared }) {
+function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, refreshProjects, onActivityCleared, user, onLogout }) {
   return <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand">
       <div className="brand-mark"><img src="/prosight-logo.svg" alt="ProSight AI construction intelligence"/></div>
@@ -160,7 +214,7 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, 
       </button>)}
     </nav>
     <div className="sidebar-foot">
-      <SidebarUtilities {...{dark,setDark,role,setRole,refreshProjects,onActivityCleared,collapsed}}/>
+      <SidebarUtilities {...{dark,setDark,role,refreshProjects,onActivityCleared,collapsed,user,onLogout}}/>
       <button className="collapse" aria-label={collapsed?"Expand sidebar":"Collapse sidebar"} title={collapsed?"Expand sidebar":"Collapse sidebar"} onClick={() => setCollapsed(!collapsed)}>
         <Menu size={18}/>
       </button>
@@ -169,7 +223,7 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, 
 }
 
 /** Role, notification, and theme utilities anchored in the sidebar. */
-function SidebarUtilities({ dark, setDark, role, setRole, refreshProjects, onActivityCleared, collapsed }) {
+function SidebarUtilities({ dark, setDark, role, refreshProjects, onActivityCleared, collapsed, user, onLogout }) {
   const [open,setOpen]=useState(false),[notifications,setNotifications]=useState([]);
   const [unread,setUnread]=useState(0),[approvals,setApprovals]=useState([]);
   const [loading,setLoading]=useState(false),[error,setError]=useState("");
@@ -215,8 +269,10 @@ function SidebarUtilities({ dark, setDark, role, setRole, refreshProjects, onAct
     try{await markAllNotificationsRead(roleKey);await refreshCenter()}catch(err){setError(err.message)}
   }
   return <div className="sidebar-utilities">
-    <SmartSelect label="Role" value={role} options={roleOptions} onChange={setRole} icon={Users}
-      className="role-select" compact={collapsed}/>
+    <div className="sidebar-profile" title={user?.display_name}>
+      <span className="profile-avatar"><Users size={16}/></span>
+      {!collapsed&&<span><b>{user?.display_name||"Signed in"}</b><small>{String(user?.role||role).replaceAll("_"," ")}</small></span>}
+    </div>
     <div className="utility-actions">
       <div className="notification-center" ref={centerRef}>
         <button className="icon-btn" aria-label="Notifications" aria-expanded={open}
@@ -233,9 +289,9 @@ function SidebarUtilities({ dark, setDark, role, setRole, refreshProjects, onAct
             {approvals.length===0&&<p className="notification-state">No pending approvals.</p>}
             {approvals.map(item=><article className="approval-item" key={item.id}>
               <div><b>{item.action.replaceAll("_"," ")}</b><span>{item.project_code} · {item.requested_by.replaceAll("_"," ")}</span></div>
-              <div className="notification-actions"><button onClick={()=>alert(JSON.stringify(item.preview,null,2))}>Preview</button>
+              {["attachment_update","natural_project_create"].includes(item.action)?<a href={`/assistant?review=${encodeURIComponent(item.id)}`}>Review request in AI Assistant</a>:<div className="notification-actions"><button onClick={()=>alert(JSON.stringify(item.preview,null,2))}>Preview</button>
                 <button className="approve" onClick={()=>review(item.id,"approve")}>Approve</button>
-                <button className="reject" onClick={()=>review(item.id,"reject")}>Reject</button></div>
+                <button className="reject" onClick={()=>review(item.id,"reject")}>Reject</button></div>}
             </article>)}
           </>}
           {!loading&&!error&&<><h3>Activity</h3>
@@ -249,6 +305,7 @@ function SidebarUtilities({ dark, setDark, role, setRole, refreshProjects, onAct
       <button className="theme-switch" aria-label={`Switch to ${dark?"light":"dark"} mode`} title={collapsed?`${dark?"Light":"Dark"} mode`:undefined} onClick={() => setDark(!dark)}>
         {dark ? <Sun size={16}/> : <Moon size={16}/>}<span>{dark ? "Light" : "Dark"}</span>
       </button>
+      <button className="sidebar-logout" onClick={onLogout}><X size={15}/>{!collapsed&&<span>Sign out</span>}</button>
     </div>
   </div>;
 }
@@ -262,9 +319,17 @@ function Kpi({ icon: Icon, label, value, detail, tone }) {
 }
 
 /** Executive command center assembled from authorized project records. */
-function Dashboard({ projects, goToAssistant }) {
+function Dashboard({ projects, role, goToAssistant, onOpenResourceAllocation }) {
   const [scheduleRange,setScheduleRange]=useState(6),[rangeOpen,setRangeOpen]=useState(false);
+  const [resourceSummary,setResourceSummary]=useState(null),[resourceLoading,setResourceLoading]=useState(true);
   const rangeRef=useRef(null);
+  const roleKey=roles[role];
+  useEffect(()=>{
+    let active=true;
+    setResourceLoading(true);
+    getResourceAllocationSummary(roleKey).then(result=>{if(active)setResourceSummary(result)}).catch(()=>{if(active)setResourceSummary(null)}).finally(()=>{if(active)setResourceLoading(false)});
+    return()=>{active=false};
+  },[roleKey]);
   useEffect(()=>{
     if(!rangeOpen)return;
     const closeOutside=event=>{if(rangeRef.current&&!rangeRef.current.contains(event.target))setRangeOpen(false)};
@@ -277,7 +342,7 @@ function Dashboard({ projects, goToAssistant }) {
   const avg = active.reduce((sum, p) => sum + p.actual_progress, 0) / (active.length || 1);
   const progress = active.map((p) => ({
     name: p.name.split(" ").slice(0, 2).join(" "),
-    Baseline: p.baseline_progress, Revised: p.revised_progress, Actual: p.actual_progress,
+    Baseline: !p.progress_fields_provided||p.progress_fields_provided.includes("baseline_progress")?p.baseline_progress:null, Revised: !p.progress_fields_provided||p.progress_fields_provided.includes("revised_progress")?p.revised_progress:null, Actual: p.actual_progress,
   }));
   // The prototype dataset contains snapshots rather than full history, so this
   // illustrative trend should be replaced by progress_snapshots in production.
@@ -350,6 +415,86 @@ function Dashboard({ projects, goToAssistant }) {
           <div className="timeline-item" key={`${m.name}${i}`}><i/><div><strong>{m.name}</strong><small>{m.project}</small></div><span>{m.status.replace("due ","")}</span></div>)}</div>
       </article>
     </section>
+    <section className="command-center-feature-grid">
+      <button className="resource-feature-card card" type="button" onClick={onOpenResourceAllocation}>
+        <div className="resource-feature-head"><span className="feature-icon"><Users size={18}/></span><span className="feature-arrow"><ChevronRight size={17}/></span></div>
+        <div className="resource-feature-copy"><span className="eyebrow">Operational controls</span><h2>Manpower Allocation</h2><p>Review staffing capacity, allocation pressure, and billing hours.</p></div>
+        {resourceLoading?<div className="resource-feature-loading"><i/><i/><i/></div>:resourceSummary?.totals?<div className="resource-feature-metrics">
+          <div><b>{metricNumber(resourceSummary.totals.total_manpower)}</b><span>people</span></div>
+          <div><b>{metricNumber(resourceSummary.totals.utilization_percent)}%</b><span>utilization</span></div>
+          <div><b>{metricNumber(resourceSummary.totals.planned_hours)}</b><span>planned hours</span></div>
+          <div><b>{metricNumber(resourceSummary.totals.actual_hours)}</b><span>actual hours</span></div>
+        </div>:<div className="resource-feature-empty">No allocation data yet. Open to import or review resources.</div>}
+        <span className="resource-feature-link">Open dashboard <ChevronRight size={15}/></span>
+      </button>
+    </section>
+  </>;
+}
+
+/** Server-aggregated manpower, utilization, billing, and exception dashboard. */
+function ResourceAllocationDashboard({ projects, role, onBack }) {
+  const roleKey=roles[role];
+  const [filters,setFilters]=useState({project_code:"",date_from:"",date_to:"",department:"",designation:"",employee:"",allocation_status:"",billable_status:""});
+  const [summary,setSummary]=useState(null),[trends,setTrends]=useState([]),[conflicts,setConflicts]=useState([]),[details,setDetails]=useState({items:[],total:0}),[detailOffset,setDetailOffset]=useState(0),[loading,setLoading]=useState(true),[error,setError]=useState("");
+  const updateFilter=(key,value)=>{setDetailOffset(0);setFilters(current=>({...current,[key]:value}))};
+  useEffect(()=>{
+    let active=true;
+    setLoading(true);setError("");
+    Promise.all([
+      getResourceAllocationSummary(roleKey,filters),
+      getResourceAllocationTrends(roleKey,filters),
+      getResourceAllocationConflicts(roleKey,filters),
+      getResourceAllocationDetails(roleKey,filters,100,detailOffset),
+    ]).then(([nextSummary,nextTrends,nextConflicts,nextDetails])=>{
+      if(!active)return;
+      setSummary(nextSummary);setTrends(nextTrends);setConflicts(nextConflicts);setDetails(nextDetails);
+    }).catch(nextError=>{if(active)setError(nextError.message||"Could not load resource allocation dashboard")})
+      .finally(()=>{if(active)setLoading(false)});
+    return()=>{active=false};
+  },[roleKey,filters,detailOffset]);
+  const totals=summary?.totals||{};
+  const projectOptions=projects.map(project=>({value:project.code,label:project.code}));
+  const departmentOptions=[...new Set((summary?.by_department||[]).map(item=>item.name).filter(name=>name!=="Unassigned"))];
+  const pieColors=["#2563eb","#06b6d4","#10b981","#8b5cf6","#f59e0b","#ef4444"];
+  return <>
+    <PageTitle eyebrow="Operational controls" title="Manpower Allocation" subtitle="A live view of staffing capacity, allocation pressure, and billing hours.">
+      <button className="secondary dashboard-back" type="button" onClick={onBack}><ChevronRight size={15} style={{transform:"rotate(180deg)"}}/> Back to Command Center</button>
+    </PageTitle>
+    <section className="resource-filter-bar card">
+      <div><span>Project</span><select value={filters.project_code} onChange={event=>updateFilter("project_code",event.target.value)}><option value="">All authorized projects</option>{projectOptions.map(option=><option value={option.value} key={option.value}>{option.label}</option>)}</select></div>
+      <div><span>From</span><input type="date" value={filters.date_from} onChange={event=>updateFilter("date_from",event.target.value)}/></div>
+      <div><span>To</span><input type="date" value={filters.date_to} onChange={event=>updateFilter("date_to",event.target.value)}/></div>
+      <div><span>Department</span><select value={filters.department} onChange={event=>updateFilter("department",event.target.value)}><option value="">All departments</option>{departmentOptions.map(option=><option value={option} key={option}>{option}</option>)}</select></div>
+      <div><span>Designation</span><input value={filters.designation} onChange={event=>updateFilter("designation",event.target.value)} placeholder="e.g. Engineer"/></div>
+      <div><span>Employee</span><input value={filters.employee} onChange={event=>updateFilter("employee",event.target.value)} placeholder="Name or ID"/></div>
+      <div><span>Allocation</span><select value={filters.allocation_status} onChange={event=>updateFilter("allocation_status",event.target.value)}><option value="">All allocation states</option><option value="overallocated">Over-allocated</option><option value="balanced">Balanced</option><option value="underallocated">Under-allocated</option></select></div>
+      <div><span>Billing</span><select value={filters.billable_status} onChange={event=>updateFilter("billable_status",event.target.value)}><option value="">All billing states</option><option value="billable">Billable</option><option value="non_billable">Non-billable</option></select></div>
+      <button className="secondary resource-clear" type="button" onClick={()=>{setDetailOffset(0);setFilters({project_code:"",date_from:"",date_to:"",department:"",designation:"",employee:"",allocation_status:"",billable_status:""})}}>Clear filters</button>
+    </section>
+    {loading&&<div className="resource-loading card"><span className="loading-spinner"/>Loading resource allocation…</div>}
+    {!loading&&error&&<div className="resource-error card">{error}</div>}
+    {!loading&&!error&&<>
+      <section className="kpi-grid resource-kpi-grid">
+        <Kpi icon={Users} label="Total manpower" value={metricNumber(totals.total_manpower)} detail="Authorized resource records" tone="blue"/>
+        <Kpi icon={BriefcaseBusiness} label="Active projects" value={metricNumber(totals.active_projects)} detail="Projects in current view" tone="purple"/>
+        <Kpi icon={Clock3} label="Planned hours" value={metricNumber(totals.planned_hours)} detail="Selected period" tone="blue"/>
+        <Kpi icon={Activity} label="Actual hours" value={metricNumber(totals.actual_hours)} detail="Reported hours" tone="green"/>
+        <Kpi icon={HardHat} label="Billable hours" value={metricNumber(totals.billable_hours)} detail="Approved billing input" tone="green"/>
+        <Kpi icon={TrendingUp} label="Utilization" value={`${metricNumber(totals.utilization_percent)}%`} detail="Actual ÷ capacity" tone="purple"/>
+        <Kpi icon={CircleDollarSign} label="Billing value" value={metricMoney(totals.billing_value)} detail="Billable hours × rate" tone="green"/>
+        <Kpi icon={Wrench} label="Over-allocation" value={metricNumber(totals.over_allocation_count)} detail="Employees above 100%" tone="red"/>
+      </section>
+      <section className="dashboard-grid resource-chart-grid">
+        <article className="card chart-panel"><CardTitle title="Hours by project"/><ResponsiveContainer width="100%" height={270}><BarChart data={summary?.by_project||[]}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name" tick={{fontSize:10}}/><YAxis/><Tooltip/><Legend/><Bar dataKey="planned_hours" name="Planned" fill="var(--chart-secondary)" radius={4}/><Bar dataKey="actual_hours" name="Actual" fill="var(--chart-primary)" radius={4}/></BarChart></ResponsiveContainer></article>
+        <article className="card chart-panel"><CardTitle title="Capacity versus demand"/><ResponsiveContainer width="100%" height={270}><BarChart data={summary?.by_project||[]}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name" tick={{fontSize:10}}/><YAxis/><Tooltip/><Legend/><Bar dataKey="capacity_hours" name="Capacity" fill="#94a3b8" radius={4}/><Bar dataKey="planned_hours" name="Demand" fill="#f59e0b" radius={4}/></BarChart></ResponsiveContainer></article>
+        <article className="card chart-panel"><CardTitle title="Department allocation"/><ResponsiveContainer width="100%" height={270}><PieChart><Pie data={summary?.by_department||[]} dataKey="headcount" nameKey="name" innerRadius={60} outerRadius={94} paddingAngle={2}>{(summary?.by_department||[]).map((item,index)=><Cell fill={pieColors[index%pieColors.length]} key={item.name}/>)}</Pie><Tooltip/><Legend/></PieChart></ResponsiveContainer></article>
+      </section>
+      <section className="lower-grid resource-lower-grid">
+        <article className="card chart-panel"><CardTitle title="Utilization and billing trend"/><ResponsiveContainer width="100%" height={270}><LineChart data={trends}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="period" tick={{fontSize:10}}/><YAxis yAxisId="hours"/><YAxis yAxisId="billing" orientation="right"/><YAxis yAxisId="percent" orientation="right" domain={[0,100]} hide/><Tooltip/><Legend/><Line yAxisId="hours" dataKey="planned_hours" name="Planned hours" stroke="var(--chart-secondary)" strokeWidth={2}/><Line yAxisId="hours" dataKey="actual_hours" name="Actual hours" stroke="var(--chart-primary)" strokeWidth={3}/><Line yAxisId="hours" dataKey="billable_hours" name="Billable hours" stroke="#8b5cf6" strokeWidth={2}/><Line yAxisId="billing" dataKey="billing_value" name="Billing value" stroke="#10b981" strokeWidth={2}/><Line yAxisId="percent" dataKey="utilization_percent" name="Utilization %" stroke="#f59e0b" strokeWidth={2} strokeDasharray="4 3"/></LineChart></ResponsiveContainer></article>
+        <article className="card resource-conflict-card"><CardTitle title="Resource exceptions"/><div className="resource-exception-summary"><span><b>{conflicts.length}</b> exceptions</span><span><b>{metricNumber(totals.under_allocation_count)}</b> under-allocated</span></div>{conflicts.slice(0,8).map(item=><div className="resource-exception" key={`${item.employee_id}-${item.project_code}`}><div><b>{item.employee_name||item.employee_id}</b><small>{item.project_code||"Unassigned"} · {item.designation||"No designation"}</small></div><span>{item.reasons.join(" · ")}</span></div>)}{conflicts.length===0&&<p className="empty">No allocation exceptions in this view.</p>}</article>
+      </section>
+      <article className="card table-card resource-detail-card"><div className="card-title"><h2>Resource detail</h2><div className="table-actions"><span className="table-count">{details.total} records</span><button className="secondary" type="button" disabled={!details.items.length} onClick={()=>downloadResourceCsv(details.items)}><FileSpreadsheet size={13}/> Export visible</button></div></div><div className="resource-table-wrap"><table><thead><tr><th>Employee</th><th>Designation</th><th>Department</th><th>Project</th><th>Capacity</th><th>Planned</th><th>Actual</th><th>Billable</th><th>Allocation</th><th>Utilization</th><th>Billing value</th><th>Status</th><th>Last updated</th></tr></thead><tbody>{details.items.map(item=><tr key={`${item.employee_id}-${item.project_code}-${item.last_updated}`}><td><b>{item.employee_name||item.employee_id||"—"}</b><small>{item.employee_id||"—"}</small></td><td>{item.designation||"—"}</td><td>{item.department||"—"}</td><td>{item.project_code||"Unassigned"}</td><td>{metricNumber(item.capacity_hours)}</td><td>{metricNumber(item.planned_hours)}</td><td>{metricNumber(item.actual_hours)}</td><td>{metricNumber(item.billable_hours)}</td><td>{metricNumber(item.allocation_percent)}%</td><td>{metricNumber(item.utilization_percent)}%</td><td>{metricMoney(item.billing_value)}</td><td><span className={`resource-status ${item.allocation_status}`}>{String(item.allocation_status||item.status||"unknown").replaceAll("_"," ")}</span></td><td>{item.last_updated?String(item.last_updated).slice(0,10):"—"}</td></tr>)}</tbody></table></div>{details.items.length===0&&<p className="empty">No manpower records match the selected filters.</p>}<div className="resource-pagination"><button className="secondary" type="button" disabled={detailOffset===0||loading} onClick={()=>setDetailOffset(Math.max(0,detailOffset-100))}>Previous</button><span>Showing {details.total?detailOffset+1:0}–{Math.min(detailOffset+details.items.length,details.total)} of {details.total}</span><button className="secondary" type="button" disabled={loading||detailOffset+details.items.length>=details.total} onClick={()=>setDetailOffset(detailOffset+100)}>Next</button></div></article>
+    </>}
   </>;
 }
 
@@ -364,12 +509,24 @@ function CardTitle({ title, action }) {
 }
 
 /** Interactive single-project view with schedule, contacts, and site operations. */
-function ProjectExplorer({ projects, role, refreshProjects, dataRevision, selectedProject, setSelectedProject }) {
+function ProjectExplorer({ projects, role, refreshProjects, dataRevision, selectedProject, setSelectedProject, onProjectDeleted }) {
   const selected=selectedProject;
   const setSelected=setSelectedProject;
   const [tab, setTab] = useState("overview");
   const [createOpen,setCreateOpen]=useState(false);
-  const [portfolioOpen,setPortfolioOpen]=useState(false),[portfolioRevision,setPortfolioRevision]=useState(0);
+  const deleteDialogRef=useRef(null);
+  const [deleteTarget,setDeleteTarget]=useState(null),[deleteCode,setDeleteCode]=useState("");
+  const [deleting,setDeleting]=useState(false),[deleteError,setDeleteError]=useState("");
+  useEffect(()=>{if(deleteTarget&&!deleteDialogRef.current?.open)deleteDialogRef.current?.showModal()},[deleteTarget]);
+  async function confirmDelete(event){
+    event.preventDefault();
+    if(!deleteTarget || deleteCode!==deleteTarget.code || deleting)return;
+    setDeleting(true);setDeleteError("");
+    try{await deleteProject(deleteTarget.code,deleteCode);onProjectDeleted(deleteTarget.code);setDeleteTarget(null);await refreshProjects();}
+    catch(error){setDeleteError(error.message)}finally{setDeleting(false)}
+  }
+
+  const [portfolioRevision,setPortfolioRevision]=useState(0);
   const [portfolioManpower,setPortfolioManpower]=useState([]),[invoices,setInvoices]=useState([]),[pivot,setPivot]=useState([]),[schedule,setSchedule]=useState([]);
   const project = projects.find((p)=>p.code===selected) || projects[0];
   const roleKey=roles[role];
@@ -384,38 +541,47 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
     if(tab==="invoice pivot")getInvoicePivot(roleKey).then(setPivot).catch(()=>setPivot([]));
     if(tab==="project schedule")getProjectSchedule(roleKey,project.code).then(setSchedule).catch(()=>setSchedule([]));
   },[tab,project?.code,roleKey,portfolioRevision]);
-  if (!project) return null;
+  if (!project) return <><PageTitle eyebrow="Project controls" title="Project Explorer" subtitle="No projects yet."/>{["admin","project_manager"].includes(roleKey)&&<button className="primary" onClick={()=>setCreateOpen(true)}>Create Project</button>}<UploadCenter open={createOpen} onClose={()=>setCreateOpen(false)} role={role} projects={projects} selectedProject={selected} setSelectedProject={setSelected} refreshProjects={refreshProjects} workspaceMode="create"/></>;
   const manpower = project.manpower.map((m)=>({name:m.designation,value:m.count}));
   return <>
     <PageTitle eyebrow="Project controls" title="Project Explorer" subtitle="Inspect schedules, teams, site operations, and supporting evidence.">
       <div className="project-title-actions">
         <SmartSelect label="Selected project" value={project.code} options={projectOptions} onChange={setSelected}
           icon={Building2} className="explorer-project-select"/>
-        <button className="primary create-project-action" onClick={()=>setPortfolioOpen(true)}>
-          <FileSpreadsheet size={16}/> Portfolio Import
+        <button className="primary create-project-action" onClick={()=>setTab("data imports")}>
+          <FileSpreadsheet size={16}/> Data Import &amp; Review
         </button>
+        {roleKey==="admin"&&<button className="secondary delete-project-action" onClick={()=>{setDeleteTarget({code:project.code,name:project.name});setDeleteCode("");setDeleteError("")}}>Delete Project</button>}
         {["project_manager","admin"].includes(roleKey)&&<button className="primary create-project-action" onClick={()=>setCreateOpen(true)}><Plus size={16}/> Create Project</button>}
       </div>
     </PageTitle>
+    {deleteTarget&&<dialog ref={deleteDialogRef} className="card project-delete-dialog" aria-labelledby="delete-project-title" onCancel={event=>{if(deleting)event.preventDefault();else setDeleteTarget(null)}}>
+      <h2 id="delete-project-title">Delete {deleteTarget.code}?</h2>
+      <p>{deleteTarget.name}</p><p>This permanently removes the project, its records, approvals, uploads, and RAG evidence. This cannot be undone.</p>
+      <p>Workbooks containing this project are also removed, including shared source files. Other projects’ imported records remain.</p>
+      <form onSubmit={confirmDelete}><label htmlFor="delete-project-code">Type {deleteTarget.code} to confirm</label><input id="delete-project-code" autoFocus autoComplete="off" value={deleteCode} disabled={deleting} onChange={event=>setDeleteCode(event.target.value)}/>
+      {deleteError&&<p role="alert" className="delete-project-error">{deleteError}</p>}
+      <div className="project-title-actions"><button type="button" className="secondary" disabled={deleting} onClick={()=>setDeleteTarget(null)}>Cancel</button><button type="submit" className="primary delete-project-action" disabled={deleting||deleteCode!==deleteTarget.code}>{deleting?"Deleting…":"Permanently delete project"}</button></div></form>
+    </dialog>}
     <section className="project-hero card">
       <div><span className="status success">{project.status}</span><h2>{project.name}</h2><p>{project.location} · {project.client}</p></div>
       <div className="hero-metrics"><div><span>Contract value</span><strong>{money(project.contract_value_usd)}</strong></div>
-        <div><span>Actual progress</span><strong>{project.actual_progress}%</strong></div>
-        <div><span>Variance</span><strong className={project.variance_pct<0?"negative":""}>{project.variance_pct>0?"+":""}{project.variance_pct} pp</strong></div>
-        <div><span>Delay</span><strong>{project.delay_days} days</strong></div></div>
+        {project.status==="active"&&<><div><span>Completed progress</span><strong>{project.actual_progress}%</strong></div>
+        <div><span>Variance</span><strong className={project.variance_pct<0?"negative":""}>{project.status!=="active"||project.variance_available===false?"Not applicable":`${project.variance_pct>0?"+":""}${project.variance_pct} pp`}</strong></div>
+        <div><span>Delay</span><strong>{project.delay_days} days</strong></div></>}</div>
     </section>
-    <div className="tabs">{["overview","contacts","operations","milestones","project schedule","portfolio manpower","project invoices","invoice pivot","update project"].map((item)=>
+    <div className="tabs">{["overview","contacts","operations","milestones","project schedule","portfolio manpower","project invoices","invoice pivot","data imports","update project"].map((item)=>
       <button className={tab===item?"active":""} onClick={()=>setTab(item)} key={item}>{item}</button>)}</div>
     {tab==="overview" && <section className="lower-grid">
-      <article className="card"><CardTitle title="Schedule & progress"/><div className="date-grid">
-        <div><span>Planned start</span><strong>{project.planned_start}</strong></div>
-        <div><span>Planned finish</span><strong>{project.planned_finish}</strong></div>
-        <div><span>Revised finish</span><strong>{project.revised_finish||"Not set"}</strong></div></div>
-        <ResponsiveContainer width="100%" height={230}><BarChart data={[
-          {name:"Baseline",value:project.baseline_progress},{name:"Revised",value:project.revised_progress},{name:"Actual",value:project.actual_progress}]}>
+      <article className="card"><CardTitle title={project.status==="active"?"Schedule & progress":"Project dates"}/><div className="date-grid">
+        <div><span>{project.status==="completed"?"Start date":"Planned start"}</span><strong>{project.planned_start}</strong></div>
+        <div><span>{project.status==="completed"?"End date":"Planned finish"}</span><strong>{project.planned_finish}</strong></div>
+        {project.status==="active"&&<div><span>Revised finish</span><strong>{project.revised_finish||"Not set"}</strong></div>}</div>
+        {project.status==="active"&&<ResponsiveContainer width="100%" height={230}><BarChart data={[
+          {name:"Baseline",key:"baseline_progress",value:project.baseline_progress},{name:"Revised",key:"revised_progress",value:project.revised_progress},{name:"Actual",key:"actual_progress",value:project.actual_progress}].filter(item=>!project.progress_fields_provided||project.progress_fields_provided.includes(item.key))}>
           <CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name"/><YAxis domain={[0,100]}/><Tooltip/>
           <Bar dataKey="value" radius={[7,7,0,0]}>{["#94a3b8","#60a5fa","#2563eb"].map(c=><Cell fill={c} key={c}/>)}</Bar>
-        </BarChart></ResponsiveContainer></article>
+        </BarChart></ResponsiveContainer>}</article>
       <article className="card"><CardTitle title="Evidence"/>{project.sources.map(s=><div className="evidence" key={s}><BookOpen size={16}/><span>{s}</span></div>)}</article>
     </section>}
     {tab==="contacts" && <article className="card table-card"><table><thead><tr><th>Name</th><th>Project role</th><th>Email</th><th>Mobile</th></tr></thead>
@@ -446,6 +612,8 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
       <td>{item.risk_profile}</td><td>{item.live_aging_days??"—"}</td>
     </tr>)}</tbody></table>{invoices.length===0&&<p className="empty">No invoices imported for this project.</p>}</article>}
     {tab==="invoice pivot"&&<InvoicePivot rows={pivot} projects={projects}/>}
+    {tab==="data imports"&&<AttachmentWorkspace projects={projects} role={roleKey} selectedProject={project.code}
+      onChanged={async()=>{setPortfolioRevision(value=>value+1);await refreshProjects()}}/>}
     <div hidden={tab!=="update project"}><UploadCenter
       open embedded workspaceMode="update" role={role} projects={projects} selectedProject={project.code}
       setSelectedProject={setSelected} refreshProjects={refreshProjects} dataRevision={dataRevision}
@@ -455,9 +623,6 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
       role={role} projects={projects} selectedProject={project.code}
       setSelectedProject={setSelected} refreshProjects={refreshProjects}
     />
-    <PortfolioImport open={portfolioOpen} onClose={()=>setPortfolioOpen(false)} roleKey={roleKey}
-      projects={projects} selectedProject={project.code}
-      onImported={()=>setPortfolioRevision(value=>value+1)}/>
   </>;
 }
 
@@ -510,7 +675,7 @@ function PortfolioImport({open,onClose,roleKey,onImported,projects,selectedProje
       <div className="portfolio-upload-grid"><section className={`portfolio-upload-option ${activeDataset===item.dataset?"active":""}`}>
         <div className="portfolio-card-heading"><i><FileSpreadsheet size={20}/></i><div><h3>{item.title}</h3><p>{item.description}</p></div></div>
         <a className="template-download" href={portfolioTemplateUrl(roleKey,item.dataset)} aria-disabled={loading}
-          tabIndex={loading?-1:0} onClick={event=>{if(loading)event.preventDefault()}}><FileSpreadsheet size={17}/><span>Download {item.title} template</span></a>
+          tabIndex={loading?-1:0} onClick={async event=>{event.preventDefault();if(!loading){try{await downloadTemplate(portfolioTemplateUrl(roleKey,item.dataset))}catch(error){setFeedback({type:"error",message:error.message})}}}}><FileSpreadsheet size={17}/><span>Download {item.title} template</span></a>
         <div className="upload-divider"><span>Then upload completed workbook</span></div>
         {item.dataset==="schedule"&&<label className="schedule-project-select"><span>Target project</span><select value={scheduleProject} disabled={loading} onChange={event=>setScheduleProject(event.target.value)}>
           {projects.map(project=><option value={project.code} key={project.code}>{project.code} — {project.name}</option>)}</select></label>}
@@ -628,10 +793,19 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
       setClearingJobs(items=>items.filter(id=>id!==job.id));
     }
   }
+  async function retryIndex(job){
+    try{
+      await retryDocumentIndex(job.id,roleKey);
+      setJobs(await getProjectIngestionJobs(selectedProject,roleKey));
+    }catch(retryError){
+      setJobClearErrors(current=>({...current,[job.id]:retryError.message||"Could not retry indexing"}));
+    }
+  }
   async function review(job,decision){
     try{
-      await decideChange(job.change_request_id,decision,roleKey);
-      setJobs(items=>items.map(x=>x.id===job.id?{...x,status:decision==="approve"?"ready":"rejected",message:`Change ${decision}d`}:x));
+      const result=await decideChange(job.change_request_id,decision,roleKey);
+      const nextStatus=decision==="approve"&&result.action==="document_approval"?"processing":decision==="approve"?"ready":"rejected";
+      setJobs(items=>items.map(x=>x.id===job.id?{...x,status:nextStatus,message:result.indexing==="queued"?"Approved; indexing queued":`Change ${decision}d`}:x));
       refresh();
     }catch(e){setError(e.message)}
   }
@@ -710,16 +884,16 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
         </div></fieldset>
         <fieldset><legend>Commercial details</legend><div className="project-form-grid">
           <label>Contract value (USD)<input required min="0" type="number" value={draft.contract_value_usd} onChange={e=>setDraft({...draft,contract_value_usd:e.target.value})}/></label>
-          <label>Reporting date<input required type="date" value={draft.reporting_date} onChange={e=>setDraft({...draft,reporting_date:e.target.value})}/></label>
+          {draft.status==="active"&&<label>Reporting date<input required type="date" value={draft.reporting_date} onChange={e=>setDraft({...draft,reporting_date:e.target.value})}/></label>}
         </div></fieldset>
         <fieldset><legend>Schedule</legend><div className="project-form-grid">
-          <label>Planned start<input required type="date" value={draft.planned_start} onChange={e=>setDraft({...draft,planned_start:e.target.value})}/></label>
-          <label>Planned finish<input required type="date" value={draft.planned_finish} onChange={e=>setDraft({...draft,planned_finish:e.target.value})}/></label>
-          <label>Revised finish<input type="date" value={draft.revised_finish} onChange={e=>setDraft({...draft,revised_finish:e.target.value})}/></label>
+          <label>{draft.status==="completed"?"Start date":"Planned start"}<input required type="date" value={draft.planned_start} onChange={e=>setDraft({...draft,planned_start:e.target.value})}/></label>
+          <label>{draft.status==="completed"?"End date":"Planned finish"}<input required type="date" value={draft.planned_finish} onChange={e=>setDraft({...draft,planned_finish:e.target.value})}/></label>
+          {draft.status==="active"&&<label>Revised finish<input type="date" value={draft.revised_finish} onChange={e=>setDraft({...draft,revised_finish:e.target.value})}/></label>}
         </div></fieldset>
-        <fieldset><legend>Progress</legend><div className="project-form-grid">
+        {draft.status==="active"&&<fieldset><legend>Progress</legend><div className="project-form-grid">
           {["baseline_progress","revised_progress","actual_progress"].map(field=><label key={field}>{field.replaceAll("_"," ")} (%)<input type="number" min="0" max="100" step=".1" value={draft[field]} onChange={e=>setDraft({...draft,[field]:Number(e.target.value)})}/></label>)}
-        </div></fieldset>
+        </div></fieldset>}
         <button className="primary project-submit" type="submit">{formMode==="update"?"Save project updates":projectChange?"Save preview changes":"Create approval preview"}</button>
         {formMode==="create"&&projectChange&&<div className="project-review"><b>{projectChange.status.replaceAll("_"," ")}</b><span>{roleKey==="admin"?"Review and approve before the database is changed.":"Saved for Admin review; the database has not changed."}</span>
           {projectChange.status==="pending"&&<div className="job-actions"><button type="button" onClick={()=>alert(JSON.stringify(projectChange.preview,null,2))}>Preview</button>{roleKey==="admin"&&<><button type="button" onClick={()=>reviewProject("approve")}>Approve</button><button type="button" onClick={()=>reviewProject("reject")}>Reject</button></>}</div>}</div>}
@@ -737,6 +911,7 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
       {job.filename&&<small>{job.filename}</small>}<span>{job.message}</span>
       {job.status!=="failed"&&<progress value={job.progress} max="100"/>}
       {jobClearErrors[job.id]&&<small className="job-clear-error">{jobClearErrors[job.id]}</small>}</div>
+      {job.status==="failed"&&job.approval_status==="approved"&&roleKey==="admin"&&<button className="job-retry" type="button" onClick={()=>retryIndex(job)}>Retry indexing</button>}
       {job.status==="failed"&&<button className="job-clear" type="button" disabled={clearingJobs.includes(job.id)} onClick={()=>clearFailedJob(job)}>
         <Trash2 size={13}/>{clearingJobs.includes(job.id)?"Clearing…":"Clear"}
       </button>}
@@ -803,11 +978,16 @@ function LegacyAssistant({ role, projects, initialQuery, clearInitial, messages,
 }
 
 /** Executive workspace for conversational portfolio intelligence. */
-function Assistant({ role, projects, initialQuery, clearInitial, messages, setMessages, clearMessages, selectedProject, setSelectedProject }) {
+function Assistant({ userId, role, projects, initialQuery, clearInitial, messages, setMessages, clearMessages, selectedProject, setSelectedProject, onDataChanged }) {
   const [query,setQuery]=useState(initialQuery||"");
   const [loading,setLoading]=useState(false);
+  const flow=useAssistantWorkflows({userId,role:roles[role],empty:!projects.length,selectedProject,setMessages,onChanged:onDataChanged});
+  const busy=loading||flow.busy;
   const messagesRef=useRef(null),forceScrollRef=useRef(false);
-  useEffect(()=>{if(initialQuery){setQuery(initialQuery);clearInitial();}},[initialQuery]);
+  useEffect(()=>{if(initialQuery){
+    setQuery(initialQuery);
+    clearInitial();
+  }},[initialQuery]);
   useEffect(()=>{
     const container=messagesRef.current;
     if(!container)return;
@@ -816,9 +996,11 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
       container.scrollTo({top:container.scrollHeight,behavior:forceScrollRef.current?"auto":"smooth"});
       forceScrollRef.current=false;
     }
-  },[messages,loading]);
+  },[messages,loading,flow.busy,flow.drafts.length,flow.attachments.length]);
   async function submit(text=query){
-    if(!text.trim()||loading)return;
+    if((!text.trim()&&!flow.file)||busy)return;
+    forceScrollRef.current=true;
+    if(await flow.submit(text)){setQuery("");return;}
     console.info("prosight.query_submitted",{query_length:text.trim().length,role:roles[role]});
     forceScrollRef.current=true;
     const assistantId=`pending-${Date.now()}-${Math.random()}`;
@@ -841,17 +1023,6 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
   }
   const selected=projects.find(project=>project.code===selectedProject);
   const contextName=selected?.name||"All projects";
-  const hasConversation=messages.some(message=>!message.intro);
-  const contextSuffix=selected?` for ${selected.code}`:"";
-  const promptCards=[
-    {icon:TrendingUp,label:"Project health",description:"Progress, delays and emerging delivery risk",query:`Summarize project health${contextSuffix}`},
-    {icon:ReceiptText,label:"Invoice & cash flow",description:"Approvals, collections and outstanding value",query:`Show invoice and payment risks${contextSuffix}`},
-    {icon:Users,label:"Manpower",description:"Allocation, availability and resource pressure",query:`Analyze manpower allocation${contextSuffix}`},
-    {icon:HardHat,label:"Schedule risk",description:"Milestones, variance and recommended actions",query:`Explain schedule risks${contextSuffix}`},
-  ];
-  const quickPrompts=selected
-    ? [`Why is ${selected.code} delayed?`,`Show outstanding invoices for ${selected.code}`,`Compare planned and actual manpower for ${selected.code}`]
-    : ["Which active projects are delayed?","Show portfolio invoice risks","Where is manpower under-allocated?"];
   const contextOptions=[{value:"",label:"All projects",description:"Portfolio-wide context"},
     ...projects.map(project=>({value:project.code,label:project.code,description:project.name}))];
   return <div className="assistant-page">
@@ -859,21 +1030,15 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
       <div className="assistant-title-actions">
         <SmartSelect label="Analysis context" value={selectedProject} options={contextOptions} onChange={setSelectedProject}
           icon={Building2} className="assistant-project-select"/>
-        <button className="new-chat-action primary" aria-label="Start a new chat" title="Start a new chat" disabled={loading} onClick={clearMessages}><RotateCcw size={15}/> New chat</button>
+        <button className="new-chat-action primary" aria-label="Start a new chat" title="Start a new chat" disabled={busy} onClick={()=>{clearMessages();flow.reset();setQuery("");setSelectedProject("");clearInitial();forceScrollRef.current=true}}><RotateCcw size={15}/> New chat</button>
       </div>
     </PageTitle>
-    <div className="suggestions">{quickPrompts.map(item=><button key={item} onClick={()=>submit(item)}>{item}</button>)}</div>
     <section className="chat card">
       <div className="messages" ref={messagesRef}>
-        {!hasConversation&&!loading&&<div className="assistant-welcome">
-          <div className="welcome-copy"><span><Sparkles size={14}/> Project intelligence workspace</span>
-            <h2>What would you like to understand today?</h2>
-            <p>Explore delivery, commercial and resource signals across <b>{contextName}</b>.</p>
-          </div>
-          <div className="prompt-grid">{promptCards.map(({icon:Icon,label,description,query:prompt})=>
-            <button key={label} onClick={()=>submit(prompt)}><i><Icon size={19}/></i><span><b>{label}</b><small>{description}</small></span><ChevronRight size={16}/></button>)}
-          </div>
-        </div>}
+        <div className="message assistant"><div className="avatar"><Sparkles size={18}/></div><div className="message-content"><AssistantText content={projects.length
+          ?"Hello, I’m ProSight AI, your construction intelligence AI agent. Ask about your projects, describe a new project, or attach a file to review."
+          :flow.permitted?"Hello, I’m ProSight AI, your construction intelligence AI agent. There are no projects in your organization yet. Would you like to create one? Describe your project in natural language, or upload an Excel sheet with details for one or more projects. I’ll prepare drafts for you to review."
+          :"Hello, I’m ProSight AI, your construction intelligence AI agent. There are no approved projects in your organization yet. An Admin or Project Manager can create the first project; once approved, you can upload its files here."}/></div></div>
         {messages.filter(message=>!message.intro).map((message,index)=><div className={`message ${message.role} ${message.error?"error":""} ${message.pending?"pending":""}`} key={message.id||index}>
           <div className="avatar">{message.role==="assistant"?<Sparkles size={18}/>:<Users size={18}/>}</div>
           <div><div className="message-content">{message.role==="assistant"?(message.pending
@@ -890,13 +1055,16 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
               {message.citations.map(citation=><span key={citation}>{citation}</span>)}</details>}
           </div>
         </div>)}
+        <WorkflowMessages flow={flow}/>
+        {flow.busy&&<div className="message assistant pending"><div className="avatar"><Sparkles size={18}/></div><div className="message-content"><div className="response-state"><span>Preparing your request…</span><i className="response-state-loader"><em/><em/><em/></i></div></div></div>}
       </div>
       <div className="composer-shell">
         <div className="composer-context"><span><Building2 size={13}/>{contextName}</span><small>Enter to send · Shift + Enter for a new line</small></div>
-        <div className="composer"><textarea rows="1" value={query} onChange={event=>setQuery(event.target.value)}
+        <WorkflowComposer flow={flow} showConsent={!projects.length||!!flow.active||isCreation(query)}/>
+        <div className="composer"><ChatUpload flow={flow} disabled={busy}/><textarea rows="1" value={query} onChange={event=>setQuery(event.target.value)}
           onKeyDown={event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();submit();}}}
-          placeholder="Ask about invoices, manpower, schedules, risks or uploaded evidence…"/>
-          <button className="primary" aria-label="Send question" disabled={loading||!query.trim()} onClick={()=>submit()}><Send size={18}/></button>
+          aria-label="Message ProSight AI" placeholder={!projects.length?"Describe your project, or attach an Excel project register…":"Ask about your projects, describe a new one, or attach a file…"}/>
+          <button className="primary" aria-label="Send question" disabled={busy||(!query.trim()&&!flow.file)} onClick={()=>submit()}><Send size={18}/></button>
         </div>
       </div>
     </section>
@@ -906,12 +1074,63 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
 /** Root component responsible for shared provider data, theme, and navigation state. */
 const initialMessages=()=>[{role:"assistant",content:"Hello — I’m ProSight AI. Ask me about project progress, contacts, activities, resources, or milestones.",citations:[],intro:true}];
 
+const workspacePages = new Set(["assistant", "dashboard", "projects", "resource-allocation"]);
+function requestedPage(){return location.pathname.slice(1)}
+
 export default function App(){
-  const [page,setPage]=useState("assistant"),[dark,setDark]=useState(()=>localStorage.theme==="dark");
-  const [role,setRole]=useState("Project Manager"),[projects,setProjects]=useState([]),[loading,setLoading]=useState(true);
+  const [user,setUser]=useState(null),[view,setView]=useState("loading"),[error,setError]=useState("");
+  useEffect(()=>{
+    let active=true, revision=0;
+    async function verify(){
+      const request=++revision;
+      try {
+        const current=await getCurrentUser();
+        if(!active||request!==revision)return;
+        setUser(current);setError("");
+        setView(current?"app":location.pathname==="/"?"landing":"login");
+        if(!current&&workspacePages.has(requestedPage())){
+          sessionStorage.setItem("prosight:returnTo",location.pathname);
+          history.replaceState(null,"","/login");
+        }
+      } catch(err){if(active&&request===revision){setUser(null);setError(err.message);setView("error")}}
+    }
+    verify();
+    window.addEventListener("prosight:auth-changed",verify);
+    window.addEventListener("popstate",verify);
+    return()=>{active=false;window.removeEventListener("prosight:auth-changed",verify);window.removeEventListener("popstate",verify)};
+  },[]);
+  function signedIn(current){
+    if(!current)return;
+    setUser(current);setError("");setView("app");
+    const next=sessionStorage.getItem("prosight:returnTo");sessionStorage.removeItem("prosight:returnTo");
+    history.replaceState(null,"",workspacePages.has(next?.slice(1))?next:"/assistant");
+  }
+  async function signOut(){
+    try{await logoutUser();setUser(null);setError("");setView("landing");history.replaceState(null,"","/")}
+    catch(err){setError(err.message)}
+  }
+  if(view==="loading")return <div className="auth-loading" role="status">Checking your session…</div>;
+  if(view==="error")return <div className="auth-loading"><p role="alert">{error}</p><button onClick={()=>window.location.reload()}>Retry</button><button onClick={signOut}>Sign out</button></div>;
+  if(!user&&view==="landing")return <LandingPage onLogin={()=>{history.pushState(null,"","/login");setView("login")}}/>;
+  if(!user)return <LoginPage onBack={()=>{history.pushState(null,"","/");setView("landing")}} onLoggedIn={signedIn}/>;
+  return <>{error&&<div role="alert">{error}</div>}<Workspace key={user.id} user={user} onLogout={signOut}/></>;
+}
+
+function Workspace({user,onLogout}){
+  const [page,updatePage]=useState(()=>workspacePages.has(requestedPage())?requestedPage():"assistant");
+  function setPage(next){if(workspacePages.has(next)){history.pushState(null,"",`/${next}`);updatePage(next)}}
+  useEffect(()=>{
+    if(!workspacePages.has(requestedPage()))history.replaceState(null,"","/assistant");
+    const navigate=()=>updatePage(workspacePages.has(requestedPage())?requestedPage():"assistant");
+    window.addEventListener("popstate",navigate);return()=>window.removeEventListener("popstate",navigate);
+  },[]);
+  const[dark,setDark]=useState(()=>localStorage.theme==="dark");
+  const role=user.role.replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase());
+  const[projects,setProjects]=useState([]),[loading,setLoading]=useState(true);
   const [collapsed,setCollapsed]=useState(false),[initialQuery,setInitialQuery]=useState("");
   const [messages,setMessages]=useState(initialMessages),[dataRevision,setDataRevision]=useState(0);
   const [assistantProject,setAssistantProject]=useState(""),[explorerProject,setExplorerProject]=useState("");
+
   // Theme preference is local to the browser and does not affect server data.
   useEffect(()=>{document.documentElement.dataset.theme=dark?"dark":"light";localStorage.theme=dark?"dark":"light"},[dark]);
   // Changing roles refetches data so contact masking is enforced by Python.
@@ -919,25 +1138,32 @@ export default function App(){
     if(showLoader)setLoading(true);
     try{setProjects(await getProjects(roles[role]))}finally{if(showLoader)setLoading(false)}
   }
-  useEffect(()=>{refreshProjects(true)},[role]);
+  useEffect(()=>{refreshProjects(true).catch(()=>{})},[role]);
   async function activityCleared(item){
     if(item.event_type==="change_approved"){
       await refreshProjects();
       setDataRevision(value=>value+1);
     }
   }
+  function projectDeleted(code){
+    setProjects(current=>current.filter(project=>project.code!==code));
+    setExplorerProject("");setAssistantProject("");setMessages(initialMessages());setInitialQuery("");
+    setDataRevision(value=>value+1);
+  }
   function goToAssistant(q){setInitialQuery(q);setPage("assistant")}
-  return <div className="app-shell"><Sidebar {...{page,setPage,collapsed,setCollapsed,dark,setDark,refreshProjects}}
+  return <div className="app-shell"><Sidebar key={dataRevision} {...{page,setPage,collapsed,setCollapsed,dark,setDark,refreshProjects,user,onLogout}}
     onActivityCleared={activityCleared}
-    role={role} setRole={nextRole=>{setRole(nextRole);setMessages(initialMessages());setAssistantProject("")}}/><div className="main-shell">
+    role={role}/><div className="main-shell">
     <main className={loading?"loading":""}>
       {loading?<div className="loader"><i/></div>:<>
-      {page==="dashboard"&&<Dashboard projects={projects} goToAssistant={goToAssistant}/>}
-      {page==="projects"&&<ProjectExplorer projects={projects} role={role}
+      {page==="dashboard"&&projects.length>0&&<Dashboard projects={projects} role={role} goToAssistant={goToAssistant} onOpenResourceAllocation={()=>setPage("resource-allocation")}/>}
+      {["dashboard","projects"].includes(page)&&projects.length===0&&<section className="empty-project-guide card"><span>Welcome to your project workspace</span><h1>No approved projects yet</h1><p>Start with a project description or a project workbook. Drafts awaiting approval stay separate from live projects.</p>{["admin","project_manager"].includes(roles[role])?<div className="attachment-actions"><button className="primary" onClick={()=>goToAssistant("Create a new project")}>Describe the first project</button><button className="secondary" onClick={()=>setPage("assistant")}>Upload workbook / review pending requests</button></div>:<p>An Admin or Project Manager can create the first project. You can add project documents once it is approved.</p>}</section>}
+      {page==="resource-allocation"&&<ResourceAllocationDashboard projects={projects} role={role} onBack={()=>setPage("dashboard")}/>}
+      {page==="projects"&&projects.length>0&&<ProjectExplorer projects={projects} role={role}
         refreshProjects={refreshProjects} dataRevision={dataRevision}
-        selectedProject={explorerProject} setSelectedProject={setExplorerProject}/>}
-      {page==="assistant"&&<Assistant role={role} projects={projects} initialQuery={initialQuery} clearInitial={()=>setInitialQuery("")}
+        selectedProject={explorerProject} setSelectedProject={setExplorerProject} onProjectDeleted={projectDeleted}/>}
+      {page==="assistant"&&<Assistant userId={user.id} role={role} projects={projects} initialQuery={initialQuery} clearInitial={()=>setInitialQuery("")}
         messages={messages} setMessages={setMessages} clearMessages={()=>setMessages(initialMessages())}
-        selectedProject={assistantProject} setSelectedProject={setAssistantProject}/>}
+        selectedProject={assistantProject} setSelectedProject={setAssistantProject} onDataChanged={async()=>{await refreshProjects();setDataRevision(value=>value+1)}}/>}
       </>}</main></div></div>;
 }

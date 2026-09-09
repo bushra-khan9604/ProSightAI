@@ -1,0 +1,458 @@
+{
+  "schema_version": 1,
+  "profile_id": "default-workforce",
+  "sheets": {
+    "Employees": {
+      "aliases": [
+        "Employees"
+      ],
+      "header_row": null,
+      "fields": {
+        "employee_id": {
+          "aliases": [
+            "Employee ID",
+            "emp code",
+            "employee code",
+            "staff id"
+          ]
+        },
+        "synthetic_name": {
+          "aliases": [
+            "Synthetic name",
+            "employee name",
+            "name",
+            "staff name"
+          ]
+        },
+        "role": {
+          "aliases": [
+            "Role"
+          ]
+        },
+        "department": {
+          "aliases": [
+            "Department"
+          ]
+        },
+        "home_project_id": {
+          "aliases": [
+            "Home project ID",
+            "home project",
+            "home project code"
+          ]
+        },
+        "employment_type": {
+          "aliases": [
+            "Employment type",
+            "contract type",
+            "worker type"
+          ]
+        },
+        "join_date": {
+          "aliases": [
+            "Join date",
+            "date joined",
+            "joining date"
+          ]
+        },
+        "basic_aed": {
+          "aliases": [
+            "Basic AED"
+          ]
+        },
+        "allowance_aed": {
+          "aliases": [
+            "Allowance AED"
+          ]
+        },
+        "gross_monthly_aed": {
+          "aliases": [
+            "Gross monthly AED"
+          ]
+        },
+        "status": {
+          "aliases": [
+            "Status"
+          ]
+        },
+        "data_origin": {
+          "aliases": [
+            "Data origin"
+          ]
+        }
+      }
+    },
+    "Training": {
+      "aliases": [
+        "Training"
+      ],
+      "header_row": null,
+      "fields": {
+        "training_id": {
+          "aliases": [
+            "Training ID",
+            "course record id",
+            "training record id"
+          ]
+        },
+        "employee_id": {
+          "aliases": [
+            "Employee ID",
+            "emp code",
+            "employee code",
+            "staff id"
+          ]
+        },
+        "course": {
+          "aliases": [
+            "Course"
+          ]
+        },
+        "completed_date": {
+          "aliases": [
+            "Completed date",
+            "completion date",
+            "date completed"
+          ]
+        },
+        "expiry_date": {
+          "aliases": [
+            "Expiry date",
+            "expiration date",
+            "valid until"
+          ]
+        },
+        "status": {
+          "aliases": [
+            "Status"
+          ]
+        },
+        "evidence_id": {
+          "aliases": [
+            "Evidence ID",
+            "certificate id",
+            "document id"
+          ]
+        }
+      }
+    },
+    "Attendance": {
+      "aliases": [
+        "Attendance"
+      ],
+      "header_row": null,
+      "fields": {
+        "timesheet_id": {
+          "aliases": [
+            "Timesheet ID",
+            "attendance id",
+            "time entry id"
+          ]
+        },
+        "employee_id": {
+          "aliases": [
+            "Employee ID",
+            "emp code",
+            "employee code",
+            "staff id"
+          ]
+        },
+        "project_id": {
+          "aliases": [
+            "Project ID",
+            "job number",
+            "project code"
+          ]
+        },
+        "work_date": {
+          "aliases": [
+            "Work date",
+            "attendance date",
+            "timesheet date"
+          ]
+        },
+        "attendance_status": {
+          "aliases": [
+            "Attendance status",
+            "day status",
+            "presence status"
+          ]
+        },
+        "regular_hours": {
+          "aliases": [
+            "Regular hours"
+          ]
+        },
+        "ot_hours": {
+          "aliases": [
+            "OT hours",
+            "overtime hours",
+            "overtime hrs"
+          ]
+        },
+        "total_hours": {
+          "aliases": [
+            "Total hours"
+          ]
+        }
+      }
+    },
+    "Payroll": {
+      "aliases": [
+        "Payroll"
+      ],
+      "header_row": null,
+      "fields": {
+        "payroll_id": {
+          "aliases": [
+            "Payroll ID"
+          ]
+        },
+        "employee_id": {
+          "aliases": [
+            "Employee ID",
+            "emp code",
+            "employee code",
+            "staff id"
+          ]
+        },
+        "project_id": {
+          "aliases": [
+            "Project ID",
+            "job number",
+            "project code"
+          ]
+        },
+        "month": {
+          "aliases": [
+            "Month"
+          ]
+        },
+        "basic_aed": {
+          "aliases": [
+            "Basic AED"
+          ]
+        },
+        "allowance_aed": {
+          "aliases": [
+            "Allowance AED"
+          ]
+        },
+        "ot_hours": {
+          "aliases": [
+            "OT hours",
+            "overtime hours",
+            "overtime hrs"
+          ]
+        },
+        "ot_rate_aed": {
+          "aliases": [
+            "OT rate AED",
+            "ot hourly rate aed",
+            "overtime rate aed"
+          ]
+        },
+        "ot_pay_aed": {
+          "aliases": [
+            "OT pay AED",
+            "overtime pay aed"
+          ]
+        },
+        "gross_aed": {
+          "aliases": [
+            "Gross AED"
+          ]
+        },
+        "employer_burden_aed": {
+          "aliases": [
+            "Employer burden AED",
+            "burden aed",
+            "employer cost aed"
+          ]
+        },
+        "total_cost_aed": {
+          "aliases": [
+            "Total cost AED"
+          ]
+        },
+        "payment_date": {
+          "aliases": [
+            "Payment date"
+          ]
+        },
+        "days_worked": {
+          "aliases": [
+            "Days worked"
+          ]
+        },
+        "paid_leave_days": {
+          "aliases": [
+            "Paid leave days",
+            "leave days",
+            "paid leave"
+          ]
+        }
+      }
+    },
+    "Direct allocation": {
+      "aliases": [
+        "Direct allocation"
+      ],
+      "header_row": null,
+      "fields": {
+        "employee_id": {
+          "aliases": [
+            "Employee ID",
+            "emp code",
+            "employee code",
+            "staff id"
+          ]
+        },
+        "project_id": {
+          "aliases": [
+            "Project ID",
+            "job number",
+            "project code"
+          ]
+        },
+        "month": {
+          "aliases": [
+            "Month"
+          ]
+        },
+        "fte_allocation": {
+          "aliases": [
+            "FTE allocation",
+            "allocation fte",
+            "fte"
+          ]
+        },
+        "regular_hours": {
+          "aliases": [
+            "Regular hours"
+          ]
+        },
+        "ot_hours": {
+          "aliases": [
+            "OT hours",
+            "overtime hours",
+            "overtime hrs"
+          ]
+        },
+        "payroll_cost_aed": {
+          "aliases": [
+            "Payroll cost AED",
+            "employee cost aed",
+            "labor cost aed"
+          ]
+        },
+        "basis": {
+          "aliases": [
+            "Basis"
+          ]
+        }
+      }
+    },
+    "Subcontract crews": {
+      "aliases": [
+        "Subcontract crews"
+      ],
+      "header_row": null,
+      "fields": {
+        "subcontract_id": {
+          "aliases": [
+            "Subcontract ID",
+            "crew id",
+            "subcontract crew id"
+          ]
+        },
+        "project_id": {
+          "aliases": [
+            "Project ID",
+            "job number",
+            "project code"
+          ]
+        },
+        "vendor_id": {
+          "aliases": [
+            "Vendor ID",
+            "subcontractor id",
+            "vendor code"
+          ]
+        },
+        "month": {
+          "aliases": [
+            "Month"
+          ]
+        },
+        "trade": {
+          "aliases": [
+            "Trade"
+          ]
+        },
+        "planned_workers": {
+          "aliases": [
+            "Planned workers"
+          ]
+        },
+        "actual_workers": {
+          "aliases": [
+            "Actual workers"
+          ]
+        },
+        "worker_variance": {
+          "aliases": [
+            "Worker variance"
+          ]
+        },
+        "available_labor_hours": {
+          "aliases": [
+            "Available labor hours",
+            "available labour hours",
+            "crew capacity hours"
+          ]
+        },
+        "definition": {
+          "aliases": [
+            "Definition"
+          ]
+        }
+      }
+    },
+    "Forecast deployment": {
+      "aliases": [
+        "Forecast deployment"
+      ],
+      "header_row": null,
+      "fields": {
+        "project_id": {
+          "aliases": [
+            "Project ID",
+            "job number",
+            "project code"
+          ]
+        },
+        "month": {
+          "aliases": [
+            "Month"
+          ]
+        },
+        "direct_headcount": {
+          "aliases": [
+            "Direct headcount"
+          ]
+        },
+        "subcontract_workers": {
+          "aliases": [
+            "Subcontract workers"
+          ]
+        },
+        "basis": {
+          "aliases": [
+            "Basis"
+          ]
+        }
+      }
+    }
+  }
+}

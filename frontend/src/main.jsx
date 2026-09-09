@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
+import "./resource-allocation.css";
 import "./upload.css";
 import "./theme-refresh.css";
 

@@ -18,7 +18,8 @@ class ProSightAgent:
 
     def __init__(self, repository: ProjectRepository | None = None):
         """Create an agent over the supplied repository or the default database."""
-        self.repository = repository or ProjectRepository()
+        from .db import create_repository
+        self.repository = repository or create_repository()
         self.tools = ProjectToolRegistry(self.repository)
 
     def _project_from_query(self, query: str, role: str) -> dict[str, Any] | None:

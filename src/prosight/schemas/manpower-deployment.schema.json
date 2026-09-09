@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manpower and Deployment Import",
+  "description": "Validated, reviewable records mapped from direct allocation, subcontract crew, and deployment forecast worksheets.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "direct_allocations": { "type": "array", "items": { "$ref": "#/$defs/DirectAllocationRecord" } },
+    "subcontract_crews": { "type": "array", "items": { "$ref": "#/$defs/SubcontractCrewRecord" } },
+    "deployment_forecasts": { "type": "array", "items": { "$ref": "#/$defs/DeploymentForecastRecord" } }
+  },
+  "required": ["direct_allocations", "subcontract_crews", "deployment_forecasts"],
+  "$defs": {
+    "DirectAllocationRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "employee_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "project_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "month": { "type": "string", "format": "date" },
+        "fte_allocation": { "type": "number", "minimum": 0, "maximum": 1 },
+        "regular_hours": { "type": "number", "minimum": 0 },
+        "ot_hours": { "type": "number", "minimum": 0 },
+        "payroll_cost_aed": { "type": "number", "minimum": 0 },
+        "basis": { "type": ["string", "null"], "maxLength": 500 }
+      },
+      "required": ["employee_id", "project_id", "month", "fte_allocation", "regular_hours", "ot_hours", "payroll_cost_aed"]
+    },
+    "SubcontractCrewRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subcontract_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "project_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "vendor_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "month": { "type": "string", "format": "date" },
+        "trade": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "planned_workers": { "type": "integer", "minimum": 0 },
+        "actual_workers": { "type": "integer", "minimum": 0 },
+        "worker_variance": { "type": "integer" },
+        "available_labor_hours": { "type": "number", "minimum": 0 },
+        "definition": { "type": ["string", "null"], "maxLength": 500 }
+      },
+      "required": ["subcontract_id", "project_id", "vendor_id", "month", "trade", "planned_workers", "actual_workers", "worker_variance", "available_labor_hours"]
+    },
+    "DeploymentForecastRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "month": { "type": "string", "format": "date" },
+        "direct_headcount": { "type": "integer", "minimum": 0 },
+        "subcontract_workers": { "type": "integer", "minimum": 0 },
+        "basis": { "type": ["string", "null"], "maxLength": 500 }
+      },
+      "required": ["project_id", "month", "direct_headcount", "subcontract_workers"]
+    }
+  },
+  "x-prosight-import-kind": "manpower_deployment",
+  "x-prosight-workbook-sheets": ["Direct allocation", "Subcontract crews", "Forecast deployment"]
+}
