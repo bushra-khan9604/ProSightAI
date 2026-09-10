@@ -207,3 +207,9 @@ main{padding:30px 32px 56px}.page-title{margin-bottom:24px}.page-title>div>span{
 .chat-file button,.chat-draft-context button { border: 0; color: var(--primary); background: transparent; cursor: pointer; font-size: 11px; }
 .composer .chat-upload { flex: none; border-radius: 11px; display: grid; place-items: center; }.composer textarea { min-width: 0; }
 @media(max-width:760px) { .chat-draft-fields { grid-template-columns: 1fr; }.workflow-message { width: 95%; }.composer .chat-upload { width: 36px; } }
+.project-import-rows { display: grid; gap: 6px; margin: 8px 0 12px; }
+.project-import-rows > div { display: grid; grid-template-columns: 54px minmax(70px,.45fr) minmax(0,1fr); align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface2); font-size: 10px; }
+.project-import-rows > div > span:last-child { overflow-wrap: anywhere; color: var(--muted); }
+.project-import-action { display: inline-flex; justify-content: center; padding: 3px 5px; border-radius: 99px; font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.project-import-action.create { color: #047857; background: #10b9811a; }
+.project-import-action.update { color: #1d4ed8; background: #2563eb1a; }

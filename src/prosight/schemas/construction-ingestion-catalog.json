@@ -1,0 +1,194 @@
+{
+  "catalog_version": 1,
+  "schema": "construction",
+  "entities": {
+    "projects": {
+      "table": "projects", "requires_project_id": false,
+      "business_key": ["organization_id", "code"],
+      "sheet_aliases": ["Projects", "Project Register", "Project List", "Jobs"],
+      "fields": {
+        "code": {"kind": "text", "required": true, "label": "Project Code", "aliases": ["Project ID", "Project No", "Project Number", "Job Code", "Job Number"]},
+        "name": {"kind": "text", "required": true, "label": "Project Name", "aliases": ["Project Title", "Job Name", "Job Title"]},
+        "description": {"kind": "text", "label": "Description", "aliases": ["Project Description", "Scope"]},
+        "project_type": {"kind": "text", "label": "Project Type", "aliases": ["Type"]},
+        "delivery_method": {"kind": "text", "label": "Delivery Method", "aliases": ["Procurement Method"]},
+        "contract_type": {"kind": "text", "label": "Contract Type", "aliases": ["Form of Contract"]},
+        "status": {"kind": "text", "label": "Status", "aliases": ["Project Status"]},
+        "access_mode": {"kind": "text", "label": "Access Mode", "aliases": ["Project Access"]},
+        "country_code": {"kind": "text", "label": "Country Code", "aliases": ["Country"]},
+        "location": {"kind": "text", "label": "Location", "aliases": ["Project Location", "Site"]},
+        "latitude": {"kind": "decimal", "scale": 7, "label": "Latitude", "aliases": []},
+        "longitude": {"kind": "decimal", "scale": 7, "label": "Longitude", "aliases": []},
+        "currency_code": {"kind": "currency", "label": "Currency", "aliases": ["Currency Code", "Contract Currency"]},
+        "contract_value": {"kind": "decimal", "scale": 2, "label": "Contract Value", "aliases": ["Award Value", "Signed Value", "Contract Amount"]},
+        "original_budget": {"kind": "decimal", "scale": 2, "label": "Original Budget", "aliases": ["Budget"]},
+        "gross_floor_area": {"kind": "decimal", "scale": 3, "label": "Gross Floor Area", "aliases": ["GFA"]},
+        "planned_start_date": {"kind": "date", "label": "Planned Start", "aliases": ["Start Date", "Planned Start Date"]},
+        "planned_finish_date": {"kind": "date", "label": "Planned Finish", "aliases": ["Finish Date", "End Date", "Planned Finish Date"]},
+        "actual_start_date": {"kind": "date", "label": "Actual Start", "aliases": ["Actual Start Date"]},
+        "actual_finish_date": {"kind": "date", "label": "Actual Finish", "aliases": ["Actual Finish Date", "Completion Date"]},
+        "reporting_date": {"kind": "date", "label": "Reporting Date", "aliases": ["Report Date", "Data Date"]},
+        "progress_percent": {"kind": "decimal", "scale": 4, "label": "Progress Percent", "aliases": ["Actual Progress", "Percent Complete", "% Complete"]},
+        "retention_percent": {"kind": "decimal", "scale": 4, "label": "Retention Percent", "aliases": ["Retention %"]}
+      }
+    },
+    "employees": {
+      "table": "employees", "requires_project_id": false,
+      "business_key": ["organization_id", "employee_number"],
+      "sheet_aliases": ["Employees", "Employee Register", "Workforce"],
+      "fields": {
+        "employee_number": {"kind": "text", "required": true, "label": "Employee Number", "aliases": ["Employee ID", "Staff ID", "Personnel Number"]},
+        "first_name": {"kind": "text", "required": true, "label": "First Name", "aliases": ["Given Name"]},
+        "last_name": {"kind": "text", "label": "Last Name", "aliases": ["Family Name", "Surname"]},
+        "work_email": {"kind": "text", "label": "Work Email", "aliases": ["Email"]},
+        "phone": {"kind": "text", "label": "Phone", "aliases": ["Mobile", "Telephone"]},
+        "job_title": {"kind": "text", "label": "Job Title", "aliases": ["Designation", "Position"]},
+        "department": {"kind": "text", "label": "Department", "aliases": ["Division"]},
+        "employment_type": {"kind": "text", "label": "Employment Type", "aliases": ["Worker Type"]},
+        "hire_date": {"kind": "date", "label": "Hire Date", "aliases": ["Joining Date"]},
+        "standard_hours_per_day": {"kind": "decimal", "scale": 2, "label": "Standard Hours Per Day", "aliases": ["Daily Hours"]},
+        "base_hourly_rate": {"kind": "decimal", "scale": 4, "label": "Base Hourly Rate", "aliases": ["Hourly Rate"]},
+        "currency_code": {"kind": "currency", "label": "Currency", "aliases": ["Currency Code"]},
+        "status": {"kind": "text", "label": "Status", "aliases": ["Employee Status"]}
+      }
+    },
+    "activities": {
+      "table": "activities", "requires_project_id": true,
+      "business_key": ["project_id", "activity_code"],
+      "sheet_aliases": ["Activities", "Schedule", "Programme"],
+      "fields": {
+        "activity_code": {"kind": "text", "required": true, "label": "Activity Code", "aliases": ["Activity ID", "Task ID"]},
+        "name": {"kind": "text", "required": true, "label": "Activity Name", "aliases": ["Task Name", "Activity Description"]},
+        "original_duration_days": {"kind": "decimal", "scale": 2, "label": "Original Duration Days", "aliases": ["Original Duration"]},
+        "remaining_duration_days": {"kind": "decimal", "scale": 2, "label": "Remaining Duration Days", "aliases": ["Remaining Duration"]},
+        "planned_start_date": {"kind": "date", "label": "Planned Start", "aliases": ["Start"]},
+        "planned_finish_date": {"kind": "date", "label": "Planned Finish", "aliases": ["Finish"]},
+        "actual_start_date": {"kind": "date", "label": "Actual Start", "aliases": []},
+        "actual_finish_date": {"kind": "date", "label": "Actual Finish", "aliases": []},
+        "progress_percent": {"kind": "decimal", "scale": 4, "label": "Progress Percent", "aliases": ["Percent Complete"]},
+        "is_critical": {"kind": "boolean", "label": "Critical", "aliases": ["Is Critical"]},
+        "total_float_days": {"kind": "decimal", "scale": 2, "label": "Total Float Days", "aliases": ["Total Float"]},
+        "status": {"kind": "text", "label": "Status", "aliases": ["Activity Status"]}
+      }
+    },
+    "invoices": {
+      "table": "invoices", "requires_project_id": true,
+      "business_key": ["project_id", "direction", "invoice_number"],
+      "sheet_aliases": ["Invoices", "Invoice Register", "Billing"],
+      "fields": {
+        "invoice_number": {"kind": "text", "required": true, "label": "Invoice Number", "aliases": ["Invoice No", "Invoice ID"]},
+        "invoice_type": {"kind": "text", "required": true, "label": "Invoice Type", "aliases": ["Type"]},
+        "direction": {"kind": "text", "required": true, "label": "Direction", "aliases": ["Receivable Payable"]},
+        "invoice_date": {"kind": "date", "required": true, "label": "Invoice Date", "aliases": ["Date"]},
+        "due_date": {"kind": "date", "label": "Due Date", "aliases": ["Payment Due"]},
+        "currency_code": {"kind": "currency", "required": true, "label": "Currency", "aliases": ["Currency Code"]},
+        "subtotal": {"kind": "decimal", "scale": 2, "label": "Subtotal", "aliases": ["Net Amount"]},
+        "tax_amount": {"kind": "decimal", "scale": 2, "label": "Tax Amount", "aliases": ["VAT"]},
+        "retention_amount": {"kind": "decimal", "scale": 2, "label": "Retention Amount", "aliases": ["Retention"]},
+        "total_amount": {"kind": "decimal", "scale": 2, "label": "Total Amount", "aliases": ["Invoice Amount", "Gross Amount"]},
+        "paid_amount": {"kind": "decimal", "scale": 2, "label": "Paid Amount", "aliases": ["Amount Paid"]},
+        "status": {"kind": "text", "label": "Status", "aliases": ["Invoice Status"]},
+        "notes": {"kind": "text", "label": "Notes", "aliases": ["Remarks"]}
+      }
+    },
+    "risks": {
+      "table": "risks", "requires_project_id": true,
+      "business_key": ["project_id", "risk_number"],
+      "sheet_aliases": ["Risks", "Risk Register"],
+      "fields": {
+        "risk_number": {"kind": "text", "required": true, "label": "Risk Number", "aliases": ["Risk ID", "Risk No"]},
+        "category": {"kind": "text", "label": "Category", "aliases": ["Risk Category"]},
+        "title": {"kind": "text", "required": true, "label": "Title", "aliases": ["Risk Title"]},
+        "description": {"kind": "text", "required": true, "label": "Description", "aliases": ["Risk Description"]},
+        "cause": {"kind": "text", "label": "Cause", "aliases": ["Risk Cause"]},
+        "consequence": {"kind": "text", "label": "Consequence", "aliases": ["Impact"]},
+        "probability_score": {"kind": "integer", "label": "Probability Score", "aliases": ["Likelihood"]},
+        "impact_score": {"kind": "integer", "label": "Impact Score", "aliases": ["Severity Score"]},
+        "financial_exposure": {"kind": "decimal", "scale": 2, "label": "Financial Exposure", "aliases": ["Cost Exposure"]},
+        "currency_code": {"kind": "currency", "label": "Currency", "aliases": ["Currency Code"]},
+        "mitigation_plan": {"kind": "text", "label": "Mitigation Plan", "aliases": ["Mitigation"]},
+        "target_date": {"kind": "date", "label": "Target Date", "aliases": ["Due Date"]},
+        "status": {"kind": "text", "label": "Status", "aliases": ["Risk Status"]}
+      }
+    },
+    "rfis": {
+      "table": "rfis", "requires_project_id": true,
+      "business_key": ["project_id", "rfi_number"],
+      "sheet_aliases": ["RFIs", "RFI Register", "Requests for Information"],
+      "fields": {
+        "rfi_number": {"kind": "text", "required": true, "label": "RFI Number", "aliases": ["RFI No", "RFI ID"]},
+        "subject": {"kind": "text", "required": true, "label": "Subject", "aliases": ["RFI Subject"]},
+        "question": {"kind": "text", "required": true, "label": "Question", "aliases": ["Query"]},
+        "discipline": {"kind": "text", "label": "Discipline", "aliases": ["Trade"]},
+        "location": {"kind": "text", "label": "Location", "aliases": ["Area"]},
+        "raised_by": {"kind": "text", "label": "Raised By", "aliases": ["Originator"]},
+        "assigned_to": {"kind": "text", "label": "Assigned To", "aliases": ["Responsible Party"]},
+        "raised_at": {"kind": "datetime", "required": true, "label": "Raised At", "aliases": ["Raised Date"]},
+        "response_due_date": {"kind": "date", "label": "Response Due Date", "aliases": ["Due Date"]},
+        "response": {"kind": "text", "label": "Response", "aliases": ["Answer"]},
+        "cost_impact": {"kind": "boolean", "label": "Cost Impact", "aliases": ["Has Cost Impact"]},
+        "estimated_cost_impact": {"kind": "decimal", "scale": 2, "label": "Estimated Cost Impact", "aliases": ["Cost Impact Amount"]},
+        "schedule_impact": {"kind": "boolean", "label": "Schedule Impact", "aliases": ["Has Schedule Impact"]},
+        "estimated_delay_days": {"kind": "integer", "label": "Estimated Delay Days", "aliases": ["Delay Days"]},
+        "status": {"kind": "text", "label": "Status", "aliases": ["RFI Status"]}
+      }
+    },
+    "nonconformance_reports": {
+      "table": "nonconformance_reports", "requires_project_id": true,
+      "business_key": ["project_id", "ncr_number"],
+      "sheet_aliases": ["NCRs", "NCR Register", "Nonconformance Reports"],
+      "fields": {
+        "ncr_number": {"kind": "text", "required": true, "label": "NCR Number", "aliases": ["NCR No", "NCR ID"]},
+        "title": {"kind": "text", "required": true, "label": "Title", "aliases": ["NCR Title"]},
+        "description": {"kind": "text", "required": true, "label": "Description", "aliases": ["Nonconformance"]},
+        "category": {"kind": "text", "label": "Category", "aliases": ["NCR Category"]},
+        "severity": {"kind": "text", "label": "Severity", "aliases": ["Priority"]},
+        "location": {"kind": "text", "label": "Location", "aliases": ["Area"]},
+        "detected_at": {"kind": "datetime", "required": true, "label": "Detected At", "aliases": ["Detected Date", "Raised Date"]},
+        "detected_by": {"kind": "text", "label": "Detected By", "aliases": ["Raised By"]},
+        "root_cause": {"kind": "text", "label": "Root Cause", "aliases": ["Cause"]},
+        "corrective_action": {"kind": "text", "label": "Corrective Action", "aliases": ["Correction"]},
+        "preventive_action": {"kind": "text", "label": "Preventive Action", "aliases": ["Prevention"]},
+        "target_close_date": {"kind": "date", "label": "Target Close Date", "aliases": ["Due Date"]},
+        "status": {"kind": "text", "label": "Status", "aliases": ["NCR Status"]}
+      }
+    },
+    "safety_incidents": {
+      "table": "safety_incidents", "requires_project_id": true,
+      "business_key": ["project_id", "incident_number"],
+      "sheet_aliases": ["Safety Incidents", "Incident Register", "HSE Incidents"],
+      "fields": {
+        "incident_number": {"kind": "text", "required": true, "label": "Incident Number", "aliases": ["Incident No", "Incident ID"]},
+        "incident_type": {"kind": "text", "required": true, "label": "Incident Type", "aliases": ["Type"]},
+        "severity": {"kind": "text", "required": true, "label": "Severity", "aliases": ["Classification"]},
+        "occurred_at": {"kind": "datetime", "required": true, "label": "Occurred At", "aliases": ["Incident Date"]},
+        "reported_at": {"kind": "datetime", "label": "Reported At", "aliases": ["Reported Date"]},
+        "location": {"kind": "text", "label": "Location", "aliases": ["Area"]},
+        "description": {"kind": "text", "required": true, "label": "Description", "aliases": ["Incident Description"]},
+        "lost_time_days": {"kind": "decimal", "scale": 2, "label": "Lost Time Days", "aliases": ["LTI Days"]},
+        "immediate_action": {"kind": "text", "label": "Immediate Action", "aliases": ["Action Taken"]},
+        "root_cause": {"kind": "text", "label": "Root Cause", "aliases": ["Cause"]},
+        "corrective_action": {"kind": "text", "label": "Corrective Action", "aliases": ["Correction"]},
+        "regulatory_report_required": {"kind": "boolean", "label": "Regulatory Report Required", "aliases": ["Reportable"]},
+        "status": {"kind": "text", "label": "Status", "aliases": ["Incident Status"]}
+      }
+    },
+    "daily_reports": {
+      "table": "daily_reports", "requires_project_id": true,
+      "business_key": ["project_id", "report_date", "shift_code"],
+      "sheet_aliases": ["Daily Reports", "Daily Report", "Site Diary"],
+      "fields": {
+        "report_date": {"kind": "date", "required": true, "label": "Report Date", "aliases": ["Date"]},
+        "shift_code": {"kind": "text", "required": true, "label": "Shift Code", "aliases": ["Shift"]},
+        "work_completed": {"kind": "text", "label": "Work Completed", "aliases": ["Completed Work"]},
+        "planned_work": {"kind": "text", "label": "Planned Work", "aliases": ["Next Day Plan"]},
+        "delays_and_constraints": {"kind": "text", "label": "Delays and Constraints", "aliases": ["Delays", "Constraints"]},
+        "visitors": {"kind": "text", "label": "Visitors", "aliases": ["Site Visitors"]},
+        "deliveries": {"kind": "text", "label": "Deliveries", "aliases": ["Material Deliveries"]},
+        "safety_observations": {"kind": "text", "label": "Safety Observations", "aliases": ["HSE Observations"]},
+        "quality_observations": {"kind": "text", "label": "Quality Observations", "aliases": ["QA QC Observations"]},
+        "status": {"kind": "text", "label": "Status", "aliases": ["Report Status"]}
+      }
+    }
+  }
+}

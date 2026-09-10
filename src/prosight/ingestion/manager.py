@@ -54,9 +54,9 @@ class IngestionManager:
 
     def __init__(
         self, repository: ProjectRepository, rag_store: RAGStore, upload_dir: str | Path,
-        workers: int = 2,
+        workers: int = 2, storage=None,
     ):
-        self.repository, self.rag_store = repository, rag_store
+        self.repository, self.rag_store, self.storage = repository, rag_store, storage
         self.upload_dir = Path(upload_dir)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.column_mapper = OpenAIColumnMapper()
@@ -226,7 +226,15 @@ class IngestionManager:
         """Extract, embed, and publish one date-resolved PDF."""
         try:
             self.repository.update_document_index_status(document["id"], "indexing")
-            chunks = extract_pdf_chunks(Path(document["stored_path"]), document)
+            path = Path(document["stored_path"])
+            if self.storage:
+                self.repository.update_job(job_id, "processing", 40, "Saving approved PDF to private storage")
+                bucket, object_path = self.storage.upload_pdf(document, path)
+                self.repository.update_document_storage(document["id"], bucket, object_path)
+                document = self.repository.get_document(document["id"])
+            elif getattr(self.repository, "backend", "sqlite") == "postgres":
+                raise RuntimeError("SUPABASE_SECRET_KEY is required for approved PDF Storage")
+            chunks = extract_pdf_chunks(path, document)
             self.repository.update_job(
                 job_id, "processing", 55, f"Embedding {len(chunks)} chunks"
             )
@@ -269,6 +277,8 @@ class IngestionManager:
             raise KeyError("Document not found")
         if document["kind"] == "pdf":
             self.rag_store.delete_document(document_id)
+            if self.storage and document.get("storage_bucket"):
+                self.storage.delete(document["storage_bucket"], document["storage_object_path"])
         Path(document["stored_path"]).unlink(missing_ok=True)
         return self.repository.delete_document_record(document_id) or {}
 
@@ -290,6 +300,8 @@ class IngestionManager:
             raise KeyError("Failed upload metadata not found")
         if document["kind"] == "pdf":
             self.rag_store.delete_document(document["id"])
+            if self.storage and document.get("storage_bucket"):
+                self.storage.delete(document["storage_bucket"], document["storage_object_path"])
         Path(document["stored_path"]).unlink(missing_ok=True)
         return self.repository.delete_failed_ingestion_records(job_id, actor_role)
 
@@ -297,3 +309,5 @@ class IngestionManager:
         """Stop accepting background work and release vector-store resources."""
         self.executor.shutdown(wait=False, cancel_futures=False)
         self.rag_store.close()
+        if self.storage:
+            self.storage.close()

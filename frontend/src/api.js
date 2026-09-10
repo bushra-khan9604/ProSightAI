@@ -1,4 +1,5 @@
 import { authenticatedFetch as fetch, getAuthClient } from "./auth";
+import { readApiResponse } from "./apiResponse";
 
 export async function getCurrentUser() {
   const response = await fetch("/api/auth/me");
@@ -37,9 +38,31 @@ export async function logout() {
 
 /** Fetch projects after the backend has applied role-based field filtering. */
 export async function getProjects(role) {
-  const response = await fetch(`/api/projects?role=${encodeURIComponent(role)}`);
-  if (!response.ok) throw new Error("Could not load projects");
-  return response.json();
+  const response = await fetch("/api/three-layer/projects");
+  return readApiResponse(response, "Could not load projects");
+}
+
+export async function getIngestionCatalog() {
+  return readApiResponse(
+    await fetch("/api/three-layer/catalog"),
+    "Could not load the construction ingestion catalog",
+  );
+}
+
+export async function getIngestionMappings(entityType = "projects") {
+  const query = new URLSearchParams({entity_type: entityType});
+  return readApiResponse(
+    await fetch(`/api/three-layer/mappings?${query}`),
+    "Could not load organization mappings",
+  );
+}
+
+export async function saveIngestionMapping(payload) {
+  return readApiResponse(await fetch("/api/three-layer/mappings", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload),
+  }), "Could not save the organization mapping");
 }
 
 /** Send a natural-language query to the configured ProSight AI provider. */

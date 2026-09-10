@@ -61,16 +61,16 @@ queue. Use a single backend host until shared storage/worker coordination is add
 
 ## Storage and deployment
 
-This implementation uses private, server-managed local files under `data/uploads`;
-these files are not served by the frontend static route. Metadata, previews, and
-operation states use the existing private PostgreSQL `change_requests` table.
-No schema migration, new provider account, or additional API key is needed.
-The existing OpenAI API key is required only for approved PDF embeddings.
+Pending and rejected files remain in private, server-managed staging under
+`data/uploads`; they are not served by the frontend. After Admin approval, PDFs are
+uploaded to the private `prosight-pdfs` Supabase Storage bucket at a
+project/checksum-addressed path before embedding begins. `SUPABASE_SECRET_KEY` is
+server-only and must never be exposed through the frontend. Metadata, previews,
+and operation states remain in private PostgreSQL tables. The existing OpenAI API
+key is required only for approved PDF embeddings.
 
-Supabase Storage migration is not included. The backend host needs durable disk,
-restricted filesystem permissions, and appropriate backup/sync controls. The
-workspace is currently inside OneDrive; account access and synchronization must
-also be considered before storing confidential production data. Rejected previews
+The local staged original is retained for controlled retries and extraction; use
+restricted filesystem permissions and appropriate backup/sync controls. Rejected previews
 and originals are retained as workflow history; define a retention policy before
 production use. Project deletion removes related operations and managed originals.
 

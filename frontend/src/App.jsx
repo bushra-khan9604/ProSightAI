@@ -15,10 +15,11 @@ import {
   askAgent, askAgentStream, clearFailedIngestionJob, confirmDocumentDate, createProjectImportPreview, createProjectPreview, retryDocumentIndex,
   decideChange, deleteDocument, deleteProject, getChangeRequest, getDocuments, getIngestionJob,
   getApprovals, getInvoicePivot, getNotifications, getPortfolioInvoices, getProjectSchedule,
+  getIngestionCatalog, getIngestionMappings,
   getPortfolioManpower, getProjectIngestionJobs, getProjects, getResourceAllocationConflicts,
   getResourceAllocationDetails, getResourceAllocationSummary, getResourceAllocationTrends,
   markAllNotificationsRead,
-  markNotificationRead, portfolioTemplateUrl, updateProject, updateProjectImport,
+  markNotificationRead, portfolioTemplateUrl, saveIngestionMapping, updateProject, updateProjectImport,
   uploadPortfolioWorkbook, uploadProjectFile,
   getCurrentUser, login as loginUser, logout as logoutUser,
 } from "./api";
@@ -318,6 +319,93 @@ function Kpi({ icon: Icon, label, value, detail, tone }) {
   </article>;
 }
 
+function defaultProjectMapping(catalogResponse) {
+  const catalog=catalogResponse.catalog;
+  const entity=catalog.entities.projects;
+  return {
+    catalog_version:catalog.catalog_version,
+    name:"Organization project register",
+    description:"Organization-specific project workbook labels",
+    sheets:[{
+      entity_type:"projects",
+      sheet_name:entity.sheet_aliases[0],
+      sheet_aliases:entity.sheet_aliases.slice(1),
+      columns:Object.fromEntries(Object.entries(entity.fields).map(([name,field])=>[
+        name,[field.label,...field.aliases],
+      ])),
+    }],
+  };
+}
+
+function editableMapping(profile,catalogResponse) {
+  if(!profile)return defaultProjectMapping(catalogResponse);
+  return {
+    catalog_version:profile.catalog_version,
+    name:profile.name,
+    description:profile.description||"",
+    sheets:profile.sheets,
+  };
+}
+
+/** Organization-controlled source labels; canonical database authority remains platform-owned. */
+function OrganizationMappingManager() {
+  const [open,setOpen]=useState(false),[loading,setLoading]=useState(true),[saving,setSaving]=useState(false);
+  const [catalogResponse,setCatalogResponse]=useState(null),[mappings,setMappings]=useState([]),[selectedId,setSelectedId]=useState("");
+  const [definition,setDefinition]=useState(""),[error,setError]=useState(""),[notice,setNotice]=useState("");
+  const organizationRole=catalogResponse?.organization_role||"member";
+  const canManage=["owner","admin","manager"].includes(organizationRole);
+
+  async function load(preferredId="") {
+    setLoading(true);setError("");
+    try{
+      const [catalog,nextMappings]=await Promise.all([getIngestionCatalog(),getIngestionMappings("projects")]);
+      const selected=nextMappings.items.find(item=>item.mapping_version_id===preferredId)||nextMappings.items[0]||null;
+      setCatalogResponse(catalog);setMappings(nextMappings.items);setSelectedId(selected?.mapping_version_id||"");
+      setDefinition(JSON.stringify(editableMapping(selected,catalog),null,2));
+    }catch(loadError){setError(loadError.message)}finally{setLoading(false)}
+  }
+  useEffect(()=>{load()},[]);
+
+  function selectProfile(versionId){
+    setSelectedId(versionId);setError("");setNotice("");
+    const selected=mappings.find(item=>item.mapping_version_id===versionId)||null;
+    if(catalogResponse)setDefinition(JSON.stringify(editableMapping(selected,catalogResponse),null,2));
+  }
+  async function save(){
+    setSaving(true);setError("");setNotice("");
+    try{
+      const parsed=JSON.parse(definition);
+      const selected=mappings.find(item=>item.mapping_version_id===selectedId)||null;
+      const versions=selected?mappings.filter(item=>item.mapping_profile_id===selected.mapping_profile_id):[];
+      const versionNo=versions.length?Math.max(...versions.map(item=>item.version_no))+1:1;
+      const saved=await saveIngestionMapping({
+        ...parsed,
+        name:selected?.name||parsed.name,
+        mapping_profile_id:selected?.mapping_profile_id||crypto.randomUUID(),
+        mapping_version_id:crypto.randomUUID(),
+        version_no:versionNo,
+      });
+      setNotice(`Mapping version ${saved.version_no} is active for future assistant uploads.`);
+      await load(saved.mapping_version_id);
+    }catch(saveError){setError(saveError instanceof SyntaxError?"Mapping profile JSON is not valid JSON.":saveError.message)}finally{setSaving(false)}
+  }
+
+  return <article className={`card mapping-feature-card ${open?"open":""}`}>
+    <div className="resource-feature-head"><span className="feature-icon"><Wrench size={18}/></span><button type="button" className="secondary" onClick={()=>setOpen(value=>!value)} aria-expanded={open}>{open?"Close":"Manage mappings"}</button></div>
+    <div className="resource-feature-copy"><span className="eyebrow">Organization controls</span><h2>Excel column mappings</h2><p>Define your organization’s worksheet and column labels. ProSight keeps database tables, types, tenant scope, and business keys protected.</p></div>
+    {!open&&<><div className="resource-feature-empty">{loading?"Loading mapping profiles…":`${mappings.length} saved mapping version${mappings.length===1?"":"s"} · organization role ${organizationRole}`}</div><span className="resource-feature-link">Configure JSON profile <ChevronRight size={15}/></span></>}
+    {open&&<div className="mapping-editor">
+      {loading?<div className="resource-loading"><i className="loading-spinner"/> Loading organization mappings…</div>:<>
+        <div className="mapping-editor-toolbar"><label><span>Mapping profile</span><select value={selectedId} onChange={event=>selectProfile(event.target.value)}><option value="">New project mapping</option>{mappings.map(item=><option key={item.mapping_version_id} value={item.mapping_version_id}>{item.name} · version {item.version_no}</option>)}</select></label>{canManage&&<button className="secondary" type="button" onClick={()=>selectProfile("")}>New profile</button>}</div>
+        <p className="mapping-help">Edit source sheet names and column aliases only. Saving an existing profile creates a new immutable version.</p>
+        <textarea aria-label="Organization Excel mapping JSON" rows={16} value={definition} readOnly={!canManage||saving} onChange={event=>setDefinition(event.target.value)}/>
+        {error&&<p className="mapping-error" role="alert">{error}</p>}{notice&&<p className="mapping-notice" role="status">{notice}</p>}
+        {canManage?<button className="primary mapping-save" type="button" disabled={saving||!definition.trim()} onClick={save}>{saving?"Saving…":"Save mapping version"}</button>:<p className="mapping-help">An organization owner, admin, or manager can change this profile.</p>}
+      </>}
+    </div>}
+  </article>;
+}
+
 /** Executive command center assembled from authorized project records. */
 function Dashboard({ projects, role, goToAssistant, onOpenResourceAllocation }) {
   const [scheduleRange,setScheduleRange]=useState(6),[rangeOpen,setRangeOpen]=useState(false);
@@ -427,6 +515,7 @@ function Dashboard({ projects, role, goToAssistant, onOpenResourceAllocation }) 
         </div>:<div className="resource-feature-empty">No allocation data yet. Open to import or review resources.</div>}
         <span className="resource-feature-link">Open dashboard <ChevronRight size={15}/></span>
       </button>
+      <OrganizationMappingManager/>
     </section>
   </>;
 }
@@ -981,7 +1070,7 @@ function LegacyAssistant({ role, projects, initialQuery, clearInitial, messages,
 function Assistant({ userId, role, projects, initialQuery, clearInitial, messages, setMessages, clearMessages, selectedProject, setSelectedProject, onDataChanged }) {
   const [query,setQuery]=useState(initialQuery||"");
   const [loading,setLoading]=useState(false);
-  const flow=useAssistantWorkflows({userId,role:roles[role],empty:!projects.length,selectedProject,setMessages,onChanged:onDataChanged});
+  const flow=useAssistantWorkflows({userId,role:roles[role],projects,setMessages,onChanged:onDataChanged});
   const busy=loading||flow.busy;
   const messagesRef=useRef(null),forceScrollRef=useRef(false);
   useEffect(()=>{if(initialQuery){
@@ -1036,7 +1125,7 @@ function Assistant({ userId, role, projects, initialQuery, clearInitial, message
     <section className="chat card">
       <div className="messages" ref={messagesRef}>
         <div className="message assistant"><div className="avatar"><Sparkles size={18}/></div><div className="message-content"><AssistantText content={projects.length
-          ?"Hello, I’m ProSight AI, your construction intelligence AI agent. Ask about your projects, describe a new project, or attach a file to review."
+          ?"Hello, I’m ProSight AI, your construction intelligence AI agent. Ask about your projects, or attach an Excel workbook with an optional instruction to create or update project records."
           :flow.permitted?"Hello, I’m ProSight AI, your construction intelligence AI agent. There are no projects in your organization yet. Would you like to create one? Describe your project in natural language, or upload an Excel sheet with details for one or more projects. I’ll prepare drafts for you to review."
           :"Hello, I’m ProSight AI, your construction intelligence AI agent. There are no approved projects in your organization yet. An Admin or Project Manager can create the first project; once approved, you can upload its files here."}/></div></div>
         {messages.filter(message=>!message.intro).map((message,index)=><div className={`message ${message.role} ${message.error?"error":""} ${message.pending?"pending":""}`} key={message.id||index}>
@@ -1063,7 +1152,7 @@ function Assistant({ userId, role, projects, initialQuery, clearInitial, message
         <WorkflowComposer flow={flow} showConsent={!projects.length||!!flow.active||isCreation(query)}/>
         <div className="composer"><ChatUpload flow={flow} disabled={busy}/><textarea rows="1" value={query} onChange={event=>setQuery(event.target.value)}
           onKeyDown={event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();submit();}}}
-          aria-label="Message ProSight AI" placeholder={!projects.length?"Describe your project, or attach an Excel project register…":"Ask about your projects, describe a new one, or attach a file…"}/>
+          aria-label="Message ProSight AI" placeholder={!projects.length?"Attach an Excel workbook and optionally describe what to create…":"Ask about projects, or attach Excel and describe what to create or update…"}/>
           <button className="primary" aria-label="Send question" disabled={busy||(!query.trim()&&!flow.file)} onClick={()=>submit()}><Send size={18}/></button>
         </div>
       </div>
@@ -1156,8 +1245,8 @@ function Workspace({user,onLogout}){
     role={role}/><div className="main-shell">
     <main className={loading?"loading":""}>
       {loading?<div className="loader"><i/></div>:<>
-      {page==="dashboard"&&projects.length>0&&<Dashboard projects={projects} role={role} goToAssistant={goToAssistant} onOpenResourceAllocation={()=>setPage("resource-allocation")}/>}
-      {["dashboard","projects"].includes(page)&&projects.length===0&&<section className="empty-project-guide card"><span>Welcome to your project workspace</span><h1>No approved projects yet</h1><p>Start with a project description or a project workbook. Drafts awaiting approval stay separate from live projects.</p>{["admin","project_manager"].includes(roles[role])?<div className="attachment-actions"><button className="primary" onClick={()=>goToAssistant("Create a new project")}>Describe the first project</button><button className="secondary" onClick={()=>setPage("assistant")}>Upload workbook / review pending requests</button></div>:<p>An Admin or Project Manager can create the first project. You can add project documents once it is approved.</p>}</section>}
+      {page==="dashboard"&&<Dashboard projects={projects} role={role} goToAssistant={goToAssistant} onOpenResourceAllocation={()=>setPage("resource-allocation")}/>}
+      {page==="projects"&&projects.length===0&&<section className="empty-project-guide card"><span>Welcome to your project workspace</span><h1>No approved projects yet</h1><p>Upload an Excel project workbook in the AI Assistant. Drafts awaiting approval stay separate from live projects.</p>{["admin","project_manager"].includes(roles[role])?<div className="attachment-actions"><button className="primary" onClick={()=>goToAssistant("Help me prepare a project workbook")}>Open AI Assistant</button></div>:<p>An Admin or Project Manager can create the first project. You can add project documents once it is approved.</p>}</section>}
       {page==="resource-allocation"&&<ResourceAllocationDashboard projects={projects} role={role} onBack={()=>setPage("dashboard")}/>}
       {page==="projects"&&projects.length>0&&<ProjectExplorer projects={projects} role={role}
         refreshProjects={refreshProjects} dataRevision={dataRevision}

@@ -15,7 +15,7 @@ HYBRID_SQL = """
 WITH dense_candidates AS (
     SELECT c.id, c.embedding OPERATOR(extensions.<=>) %(vector)s::extensions.vector AS distance
     FROM prosight.document_chunks c JOIN prosight.documents d ON d.id=c.document_id
-    WHERE c.project_code=%(project)s AND d.project_code=%(project)s
+    WHERE c.project_code=ANY(%(projects)s::text[]) AND d.project_code=ANY(%(projects)s::text[])
       AND d.approval_status='approved' AND d.index_status='ready' AND d.status='ready'
       AND c.metadata->>'approval_status'='approved' AND c.embedding_model=%(model)s
       AND (%(documents)s::text[] IS NULL OR c.document_id=ANY(%(documents)s::text[]))
@@ -26,7 +26,7 @@ WITH dense_candidates AS (
 ), lexical_candidates AS (
     SELECT c.id, ts_rank_cd(c.search_text,websearch_to_tsquery('english',%(query)s)) AS relevance
     FROM prosight.document_chunks c JOIN prosight.documents d ON d.id=c.document_id
-    WHERE c.project_code=%(project)s AND d.project_code=%(project)s
+    WHERE c.project_code=ANY(%(projects)s::text[]) AND d.project_code=ANY(%(projects)s::text[])
       AND d.approval_status='approved' AND d.index_status='ready' AND d.status='ready'
       AND c.metadata->>'approval_status'='approved' AND c.embedding_model=%(model)s
       AND (%(documents)s::text[] IS NULL OR c.document_id=ANY(%(documents)s::text[]))
@@ -115,8 +115,9 @@ class PgVectorStore:
         vectors = self.embedder([query])
         if len(vectors) != 1:
             raise ValueError("Embedding provider returned an incomplete query batch")
+        projects = [project_code] if project_code == "COMPANY" else [project_code, "COMPANY"]
         params = {"vector": self._vector(vectors[0]), "query": query,
-                  "project": project_code, "model": self.model, "documents": document_ids,
+                  "projects": projects, "model": self.model, "documents": document_ids,
                   "candidates": max(40, limit*8), "limit": limit}
         with closing(self.repository.connect()) as db:
             # Iterative scans compensate for project/document filters in HNSW.

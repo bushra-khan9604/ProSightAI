@@ -17,6 +17,7 @@ MIGRATION_ROOT = Path(__file__).resolve().parents[3] / 'supabase/migrations'
 MIGRATIONS = (
     (1, MIGRATION_ROOT / '20260907161807_prosight_postgres_pgvector.sql'),
     (2, MIGRATION_ROOT / '20260908120000_workforce_imports.sql'),
+    (3, MIGRATION_ROOT / '20260909183928_add_pdf_storage.sql'),
 )
 IMPORT_TABLES = (
     'projects', 'documents', 'ingestion_jobs', 'change_requests', 'audit_events',

@@ -25,9 +25,18 @@ from .config import get_settings
 from .supabase_auth import get_supabase_user
 from .ingestion import IngestionManager
 from .ingestion.excel import preview_workbook
+from .ingestion.governed_excel import OrganizationMapping
+from .ingestion.catalog import (
+    OrganizationSheetProfile,
+    compile_sheet_profile,
+    load_catalog,
+    organization_profile_json_schema,
+)
+from .ingestion.persistence import MappingRecord
 from .ingestion.portfolio import create_portfolio_template, parse_portfolio_workbook
 from .observability import RequestTrace, configure_logging, sanitize
 from .rag import RAGStore
+from .redesign_runtime import ThreeLayerRuntime
 from .repository import DEFAULT_DB, ProjectRepository
 
 
@@ -78,6 +87,41 @@ def _mask_resource_record(item: dict[str, Any], role: str) -> dict[str, Any]:
     return result
 
 
+def _project_import_analysis(rows: list[Any], projects: list[dict[str, Any]]) -> dict[str, Any]:
+    """Classify validated project rows as creates or updates without trusting labels."""
+    existing_codes = {
+        str(project.get("code", "")).strip().casefold()
+        for project in projects
+        if str(project.get("code", "")).strip()
+    }
+    create_codes: list[str] = []
+    update_codes: list[str] = []
+    for row in rows:
+        if getattr(row, "entity_type", None) != "projects":
+            continue
+        code = str(getattr(row, "values", {}).get("code", "")).strip()
+        if not code:
+            continue
+        target = update_codes if code.casefold() in existing_codes else create_codes
+        target.append(code)
+    if create_codes and update_codes:
+        suggested_action = "create_and_update_projects"
+    elif create_codes:
+        suggested_action = "create_projects"
+    elif update_codes:
+        suggested_action = "update_projects"
+    else:
+        suggested_action = "review_workbook"
+    return {
+        "project_row_count": len(create_codes) + len(update_codes),
+        "create_count": len(create_codes),
+        "update_count": len(update_codes),
+        "create_codes": create_codes,
+        "update_codes": update_codes,
+        "suggested_action": suggested_action,
+    }
+
+
 class ChatHistoryMessage(BaseModel):
     """One user-visible message supplied as temporary conversation context."""
 
@@ -108,6 +152,49 @@ class QueryRequest(BaseModel):
     history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=10)
 
 
+class ThreeLayerFactsRequest(BaseModel):
+    fact: Literal["projects", "risks", "claims", "daily_reports"]
+    organization_id: str | None = None
+
+
+class ThreeLayerSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=10_000)
+    organization_id: str | None = None
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class GovernedSheetMappingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_type: str = Field(min_length=1, max_length=100)
+    sheet_name: str = Field(min_length=1, max_length=250)
+    sheet_aliases: list[str] = Field(default_factory=list, max_length=50)
+    columns: dict[str, str | list[str]]
+
+
+class GovernedMappingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: str | None = None
+    mapping_profile_id: str
+    mapping_version_id: str
+    version_no: int = Field(ge=1)
+    catalog_version: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=250)
+    description: str | None = Field(default=None, max_length=2000)
+    sheets: list[GovernedSheetMappingRequest] = Field(min_length=1)
+
+
+class GovernedDecisionRequest(BaseModel):
+    organization_id: str | None = None
+    decision: Literal["approved", "rejected"]
+    reason: str | None = Field(default=None, max_length=4000)
+
+
+class GovernedOrganizationRequest(BaseModel):
+    organization_id: str | None = None
+
+
 from .project_models import ProjectDraft, ProjectUpdate
 
 
@@ -120,31 +207,76 @@ class DocumentDateConfirmation(BaseModel):
 class Runtime:
     """Application dependencies shared by API handlers and background workers."""
 
-    def __init__(self, repository: ProjectRepository):
+    def __init__(self, repository: ProjectRepository, three_layer: ThreeLayerRuntime | None = None):
         self.repository = repository
-        self.repository._ensure()
+        settings = get_settings()
+        selected_mode = three_layer.mode if three_layer is not None else settings.schema_mode
+        if selected_mode != "redesigned":
+            self.repository._ensure()
+        redesign_schema_check = getattr(self.repository, "ensure_redesign_schema", None)
+        if selected_mode != "legacy" and redesign_schema_check is not None:
+            redesign_schema_check()
         self.rag_store: RAGStore | None = None
         self.ingestion: IngestionManager | None = None
-        try:
-            if getattr(repository, "backend", "sqlite") == "postgres":
-                from .rag.pgvector_store import PgVectorStore
-                self.rag_store = PgVectorStore(repository)
-            else:
-                self.rag_store = RAGStore(VECTOR_DIR)
-            self.ingestion = IngestionManager(repository, self.rag_store, UPLOAD_DIR)
-        except RuntimeError:
-            # Queries and database features remain usable before an API key is configured.
-            logging.getLogger("prosight").warning("rag_runtime_unavailable")
-        self.orchestrator = MultiAgentOrchestrator(
+        if selected_mode != "redesigned":
+            try:
+                if getattr(repository, "backend", "sqlite") == "postgres":
+                    from .rag.pgvector_store import PgVectorStore
+                    from .storage import SupabaseStorage
+                    self.rag_store = PgVectorStore(repository)
+                    storage = SupabaseStorage(
+                        settings.supabase_url, settings.supabase_secret_key,
+                        settings.supabase_storage_bucket,
+                    )
+                else:
+                    self.rag_store = RAGStore(VECTOR_DIR)
+                    storage = None
+                self.ingestion = IngestionManager(
+                    repository, self.rag_store, UPLOAD_DIR, storage=storage
+                )
+            except RuntimeError:
+                # Queries and database features remain usable before an API key is configured.
+                logging.getLogger("prosight").warning("rag_runtime_unavailable")
+        if three_layer is not None:
+            self.three_layer = three_layer
+        elif settings.schema_mode == "legacy":
+            self.three_layer = ThreeLayerRuntime(mode="legacy")
+        else:
+            if getattr(repository, "backend", "sqlite") != "postgres":
+                raise RuntimeError("Compare/redesigned schema mode requires the PostgreSQL backend")
+
+            def unavailable_embedder(_texts):
+                raise RuntimeError("Embedding provider is unavailable")
+
+            redesign_embedder = getattr(self.rag_store, "embedder", None)
+            if redesign_embedder is None:
+                from .rag.store import OpenAIEmbedder
+                try:
+                    redesign_embedder = OpenAIEmbedder(
+                        settings.openai_api_key, settings.embedding_model
+                    )
+                except RuntimeError:
+                    redesign_embedder = unavailable_embedder
+            self.three_layer = ThreeLayerRuntime(
+                mode=settings.schema_mode,
+                authenticated_connection_factory=repository.connect_authenticated,
+                embedder=redesign_embedder,
+                projection_version=settings.semantic_projection_version,
+                chunking_version=settings.semantic_chunking_version,
+            )
+        self.orchestrator = None if selected_mode == "redesigned" else MultiAgentOrchestrator(
             repository, RAGAgent(self.rag_store, repository) if self.rag_store else None
         )
 
 
-def create_app(repository: ProjectRepository | None = None) -> FastAPI:
+def create_app(
+    repository: ProjectRepository | None = None,
+    three_layer: ThreeLayerRuntime | None = None,
+) -> FastAPI:
     """Build an independently testable FastAPI application."""
     configure_logging()
     from .db import create_repository
-    runtime = Runtime(repository or create_repository())
+    runtime = Runtime(repository or create_repository(), three_layer=three_layer)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -177,6 +309,10 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             except HTTPException as error:
                 return JSONResponse(status_code=error.status_code, content={"detail": error.detail},
                                     headers={"Cache-Control": "private, no-store"})
+        elif runtime.three_layer.mode == "redesigned":
+            # Redesigned requests require a server-verified Supabase identity.
+            # Never consult the legacy prosight user/session tables in this mode.
+            user = None
         else:
             user = runtime.repository.get_session_user(request.cookies.get(settings.auth_cookie_name))
         request.state.user = user
@@ -193,6 +329,22 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             query = [(key, value) for key, value in query if key not in {"role", "user_role"}]
             query.extend([("role", user["role"]), ("user_role", user["role"])])
             request.scope["query_string"] = urlencode(query).encode()
+        if (
+            runtime.three_layer.mode == "redesigned"
+            and request.url.path.startswith("/api/")
+            and request.url.path not in public_paths
+            and not request.url.path.startswith("/api/three-layer/")
+        ):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": (
+                        "Legacy API paths are disabled in redesigned mode; "
+                        "use the scoped three-layer API"
+                    )
+                },
+                headers={"Cache-Control": "private, no-store"},
+            )
         response = await call_next(request)
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "private, no-store"
@@ -208,7 +360,7 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
     @app.post("/api/auth/login")
     def login(payload: LoginRequest, response: Response) -> dict:
         """Authenticate a user and issue an opaque, revocable session cookie."""
-        if get_settings().auth_provider == "supabase":
+        if runtime.three_layer.mode == "redesigned" or get_settings().auth_provider == "supabase":
             raise HTTPException(400, "Sign in with Supabase using your email and password")
         user = runtime.repository.authenticate_user(payload.username, payload.password)
         if not user:
@@ -235,8 +387,9 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
     def logout(request: Request, response: Response) -> dict:
         """Revoke the current session and remove its browser cookie."""
         settings = get_settings()
-        runtime.repository.revoke_session(request.cookies.get(settings.auth_cookie_name))
-        runtime.repository.record_auth_event(getattr(request.state, "user", None), "logout")
+        if runtime.three_layer.mode != "redesigned" and settings.auth_provider != "supabase":
+            runtime.repository.revoke_session(request.cookies.get(settings.auth_cookie_name))
+            runtime.repository.record_auth_event(getattr(request.state, "user", None), "logout")
         response.delete_cookie(settings.auth_cookie_name, path="/")
         return {"ok": True}
 
@@ -271,7 +424,286 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             "llm_provider": "openai",
             "model": get_settings().openai_model,
             "rag_available": runtime.rag_store is not None,
+            "schema_mode": runtime.three_layer.mode,
+            "legacy_rollback_available": runtime.three_layer.legacy_rollback_available,
         }
+
+    def redesigned_scope(request: Request, organization_id: str | None):
+        user = getattr(request.state, "user", None)
+        if not user:
+            raise HTTPException(status_code=401, detail="Authenticated identity is required")
+        try:
+            # The identity comes only from the server-verified session attached
+            # by middleware.  Client payloads cannot supply or replace it.
+            verified_user_id = uuid.UUID(str(user["id"]))
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=401, detail="Verified user identity is invalid") from error
+        try:
+            return runtime.three_layer.resolve_scope(verified_user_id, organization_id)
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/api/three-layer/facts")
+    def three_layer_facts(payload: ThreeLayerFactsRequest, request: Request) -> dict:
+        scope = redesigned_scope(request, payload.organization_id)
+        return runtime.three_layer.structured_facts(payload.fact, scope)
+
+    @app.post("/api/three-layer/search")
+    def three_layer_search(payload: ThreeLayerSearchRequest, request: Request) -> dict:
+        scope = redesigned_scope(request, payload.organization_id)
+        return runtime.three_layer.search(payload.query.strip(), scope, payload.limit)
+
+    def public_mapping(record: MappingRecord) -> dict:
+        mapping = record.mapping
+        return {
+            "mapping_profile_id": mapping.mapping_profile_id,
+            "mapping_version_id": mapping.mapping_version_id,
+            "version_no": mapping.version_no,
+            "catalog_version": mapping.catalog_version,
+            "mapping_checksum": mapping.mapping_checksum,
+            "name": record.name,
+            "description": record.description,
+            "sheets": [
+                {
+                    "entity_type": sheet.entity_type,
+                    "sheet_name": sheet.sheet_name,
+                    "sheet_aliases": list(sheet.sheet_aliases),
+                    "columns": {
+                        target: list(sheet.source_labels(target))
+                        for target in sheet.columns
+                    },
+                }
+                for sheet in mapping.sheets
+            ],
+        }
+
+    @app.get("/api/three-layer/catalog")
+    def governed_catalog(request: Request, organization_id: str | None = None) -> dict:
+        scope = redesigned_scope(request, organization_id)
+        catalog = load_catalog()
+        return {
+            "organization_id": scope.organization_id,
+            "organization_role": scope.organization_role,
+            "catalog": catalog.model_dump(by_alias=True),
+            "organization_profile_schema": organization_profile_json_schema(),
+        }
+
+    @app.get("/api/three-layer/mappings")
+    def governed_mappings(
+        request: Request,
+        organization_id: str | None = None,
+        entity_type: str | None = None,
+    ) -> dict:
+        scope = redesigned_scope(request, organization_id)
+        records = runtime.three_layer.mapping_profiles(scope, entity_type=entity_type)
+        return {"organization_id": scope.organization_id,
+                "items": [public_mapping(record) for record in records]}
+
+    @app.post("/api/three-layer/mappings", status_code=201)
+    def register_governed_mapping(
+        payload: GovernedMappingRequest, request: Request
+    ) -> dict:
+        scope = redesigned_scope(request, payload.organization_id)
+        try:
+            catalog = load_catalog()
+            if payload.catalog_version != catalog.catalog_version:
+                raise ValueError(
+                    f"Mapping catalog version must be {catalog.catalog_version}"
+                )
+            sheets = tuple(
+                compile_sheet_profile(
+                    OrganizationSheetProfile.model_validate(sheet.model_dump()),
+                    catalog=catalog,
+                )
+                for sheet in payload.sheets
+            )
+            mapping = OrganizationMapping(
+                organization_id=scope.organization_id,
+                mapping_profile_id=payload.mapping_profile_id,
+                mapping_version_id=payload.mapping_version_id,
+                version_no=payload.version_no,
+                sheets=sheets,
+                catalog_version=catalog.catalog_version,
+            )
+            runtime.three_layer.register_mapping(
+                MappingRecord(mapping, payload.name.strip(), "excel", payload.description),
+                scope,
+            )
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            "mapping_profile_id": mapping.mapping_profile_id,
+            "mapping_version_id": mapping.mapping_version_id,
+            "version_no": mapping.version_no,
+            "mapping_checksum": mapping.mapping_checksum,
+        }
+
+    @app.get("/api/three-layer/projects")
+    def three_layer_projects(request: Request, organization_id: str | None = None) -> list[dict]:
+        return runtime.three_layer.projects(redesigned_scope(request, organization_id))
+
+    @app.get("/api/three-layer/imports")
+    def governed_imports(request: Request, organization_id: str | None = None) -> dict:
+        scope = redesigned_scope(request, organization_id)
+        return {"organization_id": scope.organization_id,
+                "organization_role": scope.organization_role,
+                "items": runtime.three_layer.imports(scope)}
+
+    @app.get("/api/three-layer/imports/{batch_id}")
+    def governed_import(
+        batch_id: str, request: Request, organization_id: str | None = None
+    ) -> dict:
+        scope = redesigned_scope(request, organization_id)
+        items = runtime.three_layer.imports(scope, batch_id=batch_id)
+        if not items:
+            raise HTTPException(status_code=404, detail="Import batch not found")
+        return items[0]
+
+    @app.post("/api/three-layer/imports/prepare", status_code=201)
+    def prepare_governed_import(
+        request: Request,
+        mapping_profile_id: str | None = Form(None),
+        mapping_version_no: int | None = Form(None),
+        organization_id: str | None = Form(None),
+        project_id: str | None = Form(None),
+        instruction: str | None = Form(None),
+        file: UploadFile = File(...),
+    ) -> dict:
+        scope = redesigned_scope(request, organization_id)
+        filename = Path(file.filename or "").name
+        instruction_text = (instruction or "").strip()
+        temp_path: Path | None = None
+        try:
+            if len(instruction_text) > 4_000:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Workbook instructions cannot exceed 4,000 characters",
+                )
+            if Path(filename).suffix.lower() != ".xlsx":
+                raise HTTPException(status_code=400, detail="A governed .xlsx workbook is required")
+            if mapping_profile_id is None:
+                selected_mapping = runtime.three_layer.ensure_default_project_mapping(scope)
+                mapping_profile_id = selected_mapping.mapping.mapping_profile_id
+                mapping_version_no = selected_mapping.mapping.version_no
+            elif mapping_version_no is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="mapping_version_no is required with a profile",
+                )
+            oversized = False
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as temporary:
+                temp_path = Path(temporary.name)
+                total = 0
+                while chunk := file.file.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > 10 * 1024 * 1024:
+                        oversized = True
+                        break
+                    temporary.write(chunk)
+            if oversized:
+                raise HTTPException(status_code=413, detail="Workbook exceeds the 10 MiB limit")
+            prepared = runtime.three_layer.prepare_import(
+                temp_path,
+                scope,
+                mapping_profile_id=mapping_profile_id,
+                mapping_version_no=mapping_version_no,
+                original_filename=filename,
+                mime_type=file.content_type,
+                project_id=project_id,
+            )
+            analysis = _project_import_analysis(
+                prepared.preview.rows,
+                runtime.three_layer.projects(scope),
+            )
+        except HTTPException:
+            raise
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except (LookupError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:
+            logging.getLogger("prosight").exception("governed_import_prepare_failed")
+            raise HTTPException(
+                status_code=500,
+                detail="The server could not process this workbook. Please retry or contact support.",
+            ) from error
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+        preview = prepared.preview
+        return {
+            "import_batch_id": preview.import_batch_id,
+            "source_file_id": preview.source_file_id,
+            "transformation_run_id": prepared.transformation_run_id,
+            "mapping_profile_id": preview.mapping_profile_id,
+            "mapping_version_id": preview.mapping_version_id,
+            "mapping_version_no": preview.mapping_version_no,
+            "source_checksum": preview.source_checksum,
+            "profile_checksum": preview.profile_checksum,
+            "input_profile_checksum": preview.input_profile_checksum,
+            "normalized_preview_checksum": preview.normalized_preview_checksum,
+            "validation_checksum": preview.validation_checksum,
+            "valid": preview.valid,
+            "instruction": instruction_text or None,
+            "analysis": analysis,
+            "row_count": len(preview.rows),
+            "rows": [
+                {"entity_type": row.entity_type, "values": row.values, "lineage": row.lineage}
+                for row in preview.rows[:200]
+            ],
+            "issues": [issue.__dict__ for issue in preview.issues],
+        }
+
+    @app.post("/api/three-layer/imports/{batch_id}/submit")
+    def submit_governed_import(
+        batch_id: str, payload: GovernedOrganizationRequest, request: Request
+    ) -> dict:
+        scope = redesigned_scope(request, payload.organization_id)
+        try:
+            runtime.three_layer.submit_import(batch_id, scope)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"import_batch_id": str(uuid.UUID(batch_id)), "status": "awaiting_approval"}
+
+    @app.post("/api/three-layer/imports/{batch_id}/decision")
+    def decide_governed_import(
+        batch_id: str, payload: GovernedDecisionRequest, request: Request
+    ) -> dict:
+        scope = redesigned_scope(request, payload.organization_id)
+        try:
+            binding = runtime.three_layer.decide_import(
+                batch_id,
+                scope,
+                decision=payload.decision,
+                reason=payload.reason,
+            )
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {
+            "approval_id": binding.id,
+            "import_batch_id": binding.batch_id,
+            "decision": binding.decision,
+            "validation_checksum": binding.validation_checksum,
+            "normalized_preview_checksum": binding.normalized_preview_checksum,
+        }
+
+    @app.post("/api/three-layer/imports/{batch_id}/publish")
+    def publish_governed_import(
+        batch_id: str, payload: GovernedOrganizationRequest, request: Request
+    ) -> dict:
+        scope = redesigned_scope(request, payload.organization_id)
+        try:
+            return runtime.three_layer.publish_import(batch_id, scope)
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.get("/api/projects")
     def projects(role: str = Query("project_manager")) -> list[dict]:

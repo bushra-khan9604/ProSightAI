@@ -213,6 +213,55 @@ class IngestionTests(unittest.TestCase):
             pdf.save()
             self.assertEqual("2026-08-31", detect_reporting_date(path))
 
+    def test_approved_pdf_is_stored_before_becoming_ready(self):
+        class FakeStore:
+            def add_chunks(self, chunks):
+                self.chunks = chunks
+            def delete_document(self, document_id):
+                return None
+            def close(self):
+                return None
+        class FakeStorage:
+            def upload_pdf(self, document, path):
+                self.approval_status = document["approval_status"]
+                self.path = path
+                return "prosight-pdfs", f"{document['project_code']}/{document['checksum']}.pdf"
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "approved.pdf"
+            pdf = canvas.Canvas(str(path))
+            pdf.drawString(72, 760, "Approved progress report")
+            pdf.save()
+            repository = ProjectRepository(root / "test.db")
+            repository.initialize(DEFAULT_DATA)
+            store, storage = FakeStore(), FakeStorage()
+            manager = IngestionManager(repository, store, root / "uploads", storage=storage)
+            try:
+                document = repository.create_document(
+                    "PRJ-2024-001", path.name, "pdf", "approved-checksum", str(path)
+                )
+                job = repository.create_job(document["id"])
+                change = repository.create_document_approval_request(
+                    document, "admin", job["id"], {"before": None, "after": {}, "warnings": []}
+                )
+                repository.decide_change_request(change["id"], "approved", "admin")
+                # Use the real content checksum expected by the Storage boundary.
+                import hashlib
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                with closing(repository.connect()) as db:
+                    with db:
+                        db.execute("UPDATE documents SET checksum=? WHERE id=?", (digest, document["id"]))
+                manager._index_pdf(job["id"], repository.get_document(document["id"]))
+                saved = repository.get_document(document["id"])
+            finally:
+                manager.close()
+            self.assertEqual("approved", storage.approval_status)
+            self.assertEqual("prosight-pdfs", saved["storage_bucket"])
+            self.assertEqual("ready", saved["status"])
+
 
 if __name__ == "__main__":
     unittest.main()

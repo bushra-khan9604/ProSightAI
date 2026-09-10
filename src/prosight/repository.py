@@ -94,6 +94,9 @@ class ProjectRepository:
                         stored_path TEXT NOT NULL,
                         status TEXT NOT NULL,
                         created_at TEXT NOT NULL,
+                        storage_bucket TEXT,
+                        storage_object_path TEXT,
+                        storage_uploaded_at TEXT,
                         UNIQUE(project_code, checksum)
                     );
                     CREATE TABLE IF NOT EXISTS users (
@@ -413,6 +416,9 @@ class ProjectRepository:
                 )
                 self._ensure_column(db, "portfolio_imports", "dataset", "TEXT")
                 self._ensure_column(db, "portfolio_imports", "project_code", "TEXT")
+                self._ensure_column(db, "documents", "storage_bucket", "TEXT")
+                self._ensure_column(db, "documents", "storage_object_path", "TEXT")
+                self._ensure_column(db, "documents", "storage_uploaded_at", "TEXT")
                 self._seed_demo_users(db)
                 # Existing pending requests predate notifications but must still
                 # appear as unread Admin work after this additive migration.
@@ -741,7 +747,8 @@ class ProjectRepository:
             rows = db.execute(
                 """SELECT id, project_code, filename, kind, checksum, status, created_at,
                           reporting_date, effective_date, date_status, approval_status,
-                          index_status, revision, security_classification, approved_by, approved_at
+                          index_status, revision, security_classification, approved_by, approved_at,
+                          storage_uploaded_at
                    FROM documents WHERE project_code = ? AND status <> 'failed'
                    ORDER BY created_at DESC""",
                 (project_code,),
@@ -774,6 +781,21 @@ class ProjectRepository:
         with closing(self.connect()) as db:
             with db:
                 db.execute("UPDATE documents SET index_status=? WHERE id=?", (status, document_id))
+
+    def update_document_storage(
+        self, document_id: str, bucket: str, object_path: str
+    ) -> None:
+        """Record immutable private-object storage only for an approved PDF."""
+        with closing(self.connect()) as db:
+            with db:
+                changed = db.execute(
+                    """UPDATE documents SET storage_bucket=?,storage_object_path=?,
+                              storage_uploaded_at=?
+                       WHERE id=? AND kind='pdf' AND approval_status='approved'""",
+                    (bucket, object_path, self._now(), document_id),
+                )
+                if changed.rowcount != 1:
+                    raise ValueError("Only an approved PDF can be stored in Supabase")
 
     def create_document_approval_request(
         self, document: dict[str, Any], requested_by: str, job_id: str, preview: dict[str, Any]

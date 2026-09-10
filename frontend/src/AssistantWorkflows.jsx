@@ -1,32 +1,60 @@
 import {useEffect, useRef, useState} from 'react';
 import {Sparkles, Upload, X} from 'lucide-react';
 import {authenticatedFetch} from './auth';
-import {getDocuments} from './api';
+import {readApiResponse} from './apiResponse';
+import {classifyProjectRows,projectWorkbookMessage} from './projectImport';
 import {PreviewRows} from './AttachmentWorkspace';
 import {isFinished,visibleWorkflows,clearWorkflowMessages,settleAttachmentMessages,readWorkflowView} from './chatWorkflowState';
 
 const json=(method,body)=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 async function request(path,options){
   const response=await authenticatedFetch('/api/'+path,options);
-  const data=await response.json();
-  if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'Could not save this request. Please retry.');
-  return data;
+  return readApiResponse(response,'Could not save this request. Please retry.');
 }
 export const isCreation=text=>/\b(create|start|add|new)\b.*\bproject\b/i.test(text);
 const labels={code:'Project code',name:'Project name',status:'Status',client:'Client',location:'Location',contract_value_usd:'Contract value (USD)',planned_start:'Planned start',planned_finish:'Planned finish',revised_finish:'Revised finish (optional)',reporting_date:'Reporting date',baseline_progress:'Baseline progress (%)',revised_progress:'Revised progress (%)',actual_progress:'Actual progress (%)'};
 const numeric=new Set(['contract_value_usd','baseline_progress','revised_progress','actual_progress']);
-const states={draft:'Draft',pending:'Awaiting Admin approval',completed:'Created',rejected:'Cancelled',awaiting_confirmation:'Review and confirm',indexing:'Indexing PDF',failed:'Indexing failed',stale:'Data changed — upload again'};
-const kinds={new_project:'Create project drafts',employees_training:'Add employees and training',attendance_payroll:'Add attendance and payroll',manpower_deployment:'Add manpower and deployment',pdf:'Add PDF evidence',project:'Update project details',manpower:'Update portfolio manpower',invoices:'Update invoices',schedule:'Update schedule',combined:'Update portfolio manpower and invoices'};
-const portfolioKinds=new Set(['employees_training','attendance_payroll','manpower_deployment']);
-const managerKinds=new Set(['new_project','employees_training','attendance_payroll']);
+const states={draft:'Draft',pending:'Awaiting Admin approval',completed:'Applied',rejected:'Cancelled',validation_failed:'Validation failed',publish_failed:'Publication failed',approved:'Approved',publishing:'Publishing',awaiting_confirmation:'Review and confirm',indexing:'Indexing PDF',failed:'Indexing failed',stale:'Data changed — upload again'};
 
-export function useAssistantWorkflows({userId,role,empty,selectedProject,setMessages,onChanged}){
+function projectFields(values={}){
+  return {
+    code:values.code??null,name:values.name??null,
+    status:values.status==='planning'?'future':values.status??null,
+    client:values.client??null,location:values.location??null,
+    contract_value_usd:values.contract_value??null,
+    planned_start:values.planned_start_date??null,
+    planned_finish:values.planned_finish_date??null,
+    revised_finish:null,reporting_date:values.reporting_date??null,
+    baseline_progress:null,revised_progress:null,
+    actual_progress:values.progress_percent??null,
+  };
+}
+function governedImport(item,organizationRole='member',projects=[]){
+  const project=item.rows?.find(row=>row.entity_type==='projects')?.values||{};
+  const rowAnalysis=classifyProjectRows(item.rows,projects);
+  const analysis={...rowAnalysis,...(item.analysis||{}),projectRows:rowAnalysis.projectRows};
+  const displayStatus={review_ready:'draft',awaiting_approval:'pending',published:'completed',rejected:'rejected',cancelled:'rejected'}[item.status]||item.status;
+  const issues=(item.issues||[]).map(issue=>issue.message||String(issue));
+  return {
+    id:item.id||item.import_batch_id,status:displayStatus,native_status:item.status,
+    fields:projectFields(project),revision:item.validation_checksum||item.normalized_preview_checksum||item.id,
+    missing:[],issues,warnings:[],messages:[],notice:issues.length?'Correct the workbook or mapping profile, then upload a new version.':'',
+    source:{filename:item.original_filename||'Workbook',sheet:'Governed import',row:item.rows?.[0]?.row_number||2,
+      values:project,mapping_profile:{profile_id:item.mapping_profile_id,name:item.mapping_name}},
+    editable:false,ready:item.status==='review_ready',threeLayer:true,analysis,
+    can_confirm:item.status==='review_ready',
+    can_approve:item.status==='awaiting_approval'&&['owner','admin'].includes(organizationRole),
+  };
+}
+
+export function useAssistantWorkflows({userId,role,projects,setMessages,onChanged}){
+  const empty=!projects.length;
   const permitted=['admin','project_manager'].includes(role);
   const [drafts,setDrafts]=useState([]),[attachments,setAttachments]=useState([]);
   const [activeId,setActiveId]=useState(null),[busy,setBusy]=useState(false),[file,setFile]=useState(null);
-  const [kind,setKind]=useState('new_project'),[allowAI,setAllowAI]=useState(false),[external,setExternal]=useState(false);
-  const [documents,setDocuments]=useState([]),[replacement,setReplacement]=useState('');
-  const uploadId=useRef(null),working=useRef(false);
+  const [allowAI,setAllowAI]=useState(false);
+  const [organizationRole,setOrganizationRole]=useState('member');
+  const working=useRef(false);
   const viewKey='prosight:chat-workflows:'+userId;
   const view=useRef(null),generation=useRef(0),reviewId=useRef(new URLSearchParams(location.search).get("review"));
   if(view.current===null)view.current=readWorkflowView(sessionStorage,viewKey);
@@ -40,41 +68,80 @@ export function useAssistantWorkflows({userId,role,empty,selectedProject,setMess
     async function load(){
       if(working.current)return;
       const revision=generation.current;
-      const results=await Promise.allSettled([permitted?request('project-drafts'):Promise.resolve({items:[]}),request('attachments')]);
+      const results=await Promise.allSettled([permitted?request('three-layer/imports'):Promise.resolve({items:[]}),request('attachments')]);
       if(!live||working.current||revision!==generation.current)return;
       if(reviewId.current){
         const requested=results.flatMap(result=>result.status==='fulfilled'?result.value.items:[]).find(item=>item.id===reviewId.current);
         if(requested){remember([requested]);reviewId.current=null;history.replaceState(null,'',location.pathname);}
       }
-      if(results[0].status==='fulfilled'){clearFinished(results[0].value.items);setDrafts(visibleWorkflows(results[0].value.items,view.current));}
+      if(results[0].status==='fulfilled'){
+        const imports=results[0].value.items.map(item=>governedImport(item,results[0].value.organization_role,projects));
+        setOrganizationRole(results[0].value.organization_role||'member');clearFinished(imports);setDrafts(visibleWorkflows(imports,view.current));
+      }
       if(results[1].status==='fulfilled'){setMessages(current=>settleAttachmentMessages(current,results[1].value.items));setAttachments(visibleWorkflows(results[1].value.items,view.current));}
     }
     load();const timer=setInterval(load,10000);return()=>{live=false;clearInterval(timer)};
-  },[permitted]);
-  useEffect(()=>{
-    setReplacement('');setDocuments([]);if(!selectedProject)return;
-    let live=true;getDocuments(selectedProject,role).then(result=>{if(live)setDocuments(Array.isArray(result)?result:result.items||result.documents||[])}).catch(()=>{});
-    return()=>{live=false};
-  },[selectedProject,role]);
+  },[permitted,projects]);
   const active=drafts.find(item=>item.id===activeId&&item.editable);
   function chooseFile(value){
-    setFile(value);uploadId.current=crypto.randomUUID();setExternal(false);setReplacement('');
-    if(value)setKind(value.name.toLowerCase().endsWith('.pdf')?'pdf':empty?'new_project':permitted?'new_project':'project');
+    if(value&&!value.name.toLowerCase().endsWith('.xlsx')){
+      say('The AI Assistant accepts Excel .xlsx workbooks. Upload project documents from Project Explorer.');
+      return;
+    }
+    setFile(value);
   }
   async function action(work){
     if(working.current)return;
     working.current=true;setBusy(true);
     try{await work()}catch(error){say(error.message)}finally{working.current=false;setBusy(false)}
   }
+  async function advanceThreeLayer(item,decision){
+    if(decision==='reject'){
+      if(item.native_status!=='awaiting_approval')throw new Error('Only an import awaiting approval can be rejected.');
+      await request(`three-layer/imports/${item.id}/decision`,json('POST',{decision:'rejected'}));
+    }else if(item.native_status==='review_ready'){
+      await request(`three-layer/imports/${item.id}/submit`,json('POST',{}));
+      if(['owner','admin'].includes(organizationRole)){
+        await request(`three-layer/imports/${item.id}/decision`,json('POST',{decision:'approved'}));
+        await request(`three-layer/imports/${item.id}/publish`,json('POST',{}));
+      }
+    }else if(item.native_status==='awaiting_approval'){
+      await request(`three-layer/imports/${item.id}/decision`,json('POST',{decision:'approved'}));
+      await request(`three-layer/imports/${item.id}/publish`,json('POST',{}));
+    }
+    const listed=await request('three-layer/imports');
+    const updated=listed.items.find(candidate=>candidate.id===item.id);
+    if(updated){
+      const normalized=governedImport(updated,listed.organization_role,projects);
+      putDraft(normalized);
+      if(normalized.native_status==='published')say('The approved project changes were published to the construction database.',[item.id]);
+      else if(normalized.native_status==='awaiting_approval')say('The project changes were submitted for organization approval.',[item.id]);
+    }
+    await onChanged?.();
+  }
   async function submit(text){
     if(/^(show|review|restore)\s+(saved|pending)\s+(drafts|requests|approvals)[.!]?$/i.test(text.trim())){
       await action(async()=>{
-        const results=await Promise.all([permitted?request('project-drafts'):Promise.resolve({items:[]}),request('attachments')]);
+        const results=await Promise.allSettled([permitted?request('three-layer/imports'):Promise.resolve({items:[],organization_role:'member'}),request('attachments')]);
+        const importResponse=results[0].status==='fulfilled'?results[0].value:{items:[],organization_role:'member'};
+        const attachmentResponse=results[1].status==='fulfilled'?results[1].value:{items:[]};
+        const imports=importResponse.items.map(item=>governedImport(item,importResponse.organization_role,projects));
         generation.current++;view.current={fresh:false,ids:[]};persist();
-        setDrafts(visibleWorkflows(results[0].items,view.current));setAttachments(visibleWorkflows(results[1].items,view.current));
-        const saved=results.flatMap(result=>visibleWorkflows(result.items,view.current));
+        setDrafts(visibleWorkflows(imports,view.current));setAttachments(visibleWorkflows(attachmentResponse.items,view.current));
+        const saved=[...visibleWorkflows(imports,view.current),...visibleWorkflows(attachmentResponse.items,view.current)];
         say(saved.length?'Your saved drafts and pending requests are shown below.':'There are no saved drafts or pending requests.',saved.map(item=>item.id));
       });return true;
+    }
+    const pendingImport=drafts.find(item=>item.threeLayer&&item.native_status==='review_ready');
+    if(!file&&pendingImport&&/\b(yes|confirm|apply|proceed|publish)\b|\bgo ahead\b/i.test(text.trim())){
+      setMessages(current=>[...current,{role:'user',content:text,workflowIds:[pendingImport.id]}]);
+      await action(()=>advanceThreeLayer(pendingImport,'confirm'));
+      return true;
+    }
+    if(!file&&pendingImport&&/\b(create|update)\b/i.test(text.trim())){
+      setMessages(current=>[...current,{role:'user',content:text,workflowIds:[pendingImport.id]}]);
+      say(`This governed preview contains ${pendingImport.analysis.createCount} create and ${pendingImport.analysis.updateCount} update. It applies all validated rows atomically. If that matches your intent, say “confirm”; otherwise revise the workbook and upload it again.`,[pendingImport.id]);
+      return true;
     }
     const normalized=text.toLowerCase();
     const tokens=normalized.split(/[^a-z0-9-]+/);
@@ -86,26 +153,19 @@ export function useAssistantWorkflows({userId,role,empty,selectedProject,setMess
         const uploadMessageId=crypto.randomUUID();
         setMessages(current=>[...current,{id:uploadMessageId,role:'user',content:[text,file.name].filter(Boolean).join('\n')}]);
         const data=new FormData();data.append('file',file);
-        if(kind==='new_project'){
-          data.append('batch_id',uploadId.current);
-          const result=await request('project-drafts/workbook',{method:'POST',body:data});
-          remember(result.items);
-          setMessages(current=>current.map(message=>message.id===uploadMessageId?{...message,workflowIds:result.items.map(item=>item.id)}:message));
-          setDrafts(current=>visibleWorkflows([...result.items,...current.filter(item=>!result.items.some(next=>next.id===item.id))],view.current));
-          setActiveId(result.items.length===1?result.items[0].id:null);say(result.message,result.items.map(item=>item.id));
-        }else{
-          if(!selectedProject&&!portfolioKinds.has(kind)){say('Select the target project in Analysis context, then send the attachment again.');return;}
-          data.append('instruction',text||kinds[kind]);data.append('kind',kind);data.append('project_code',selectedProject);
-          data.append('external_processing',String(external));
-          data.append('replacement_id',replacement);
-          const result=await request('attachments',{method:'POST',body:data});
-          remember([result]);
-          setMessages(current=>current.map(message=>message.id===uploadMessageId?{...message,workflowIds:[result.id]}:message));
-          setAttachments(current=>visibleWorkflows([result,...current.filter(item=>item.id!==result.id)],view.current));
-          say('I analyzed the attachment and saved its preview below. Review it before confirming the update.',[result.id]);
-        }
+        if(text.trim())data.append('instruction',text.trim());
+        const prepared=await request('three-layer/imports/prepare',{method:'POST',body:data});
+        const listed=await request('three-layer/imports');
+        const persisted=listed.items.find(item=>item.id===prepared.import_batch_id);
+        const raw={...(persisted||{...prepared,id:prepared.import_batch_id,status:prepared.valid?'review_ready':'validation_failed',rows:prepared.rows,issues:prepared.issues,original_filename:file.name}),analysis:prepared.analysis,instruction:prepared.instruction};
+        const item=governedImport(raw,listed.organization_role||organizationRole,projects);
+        remember([item]);
+        setMessages(current=>current.map(message=>message.id===uploadMessageId?{...message,workflowIds:[item.id]}:message));
+        setDrafts(current=>visibleWorkflows([item,...current.filter(other=>other.id!==item.id)],view.current));
+        say(projectWorkbookMessage(item.analysis,text,prepared.valid),[item.id]);
         setFile(null);return;
       }
+      if(isCreation(text)||empty){say('Attach an XLSX project register and optionally describe what you want done. I will analyze its project rows, identify creates and updates, and ask you to confirm before publication.');return;}
       if(matches.length>1){say('Your message names multiple drafts. Use Continue in chat on the project you want to complete first. Each project has its own reviewed confirmation.');return;}
       let draft=matches[0]||active;
       if(!draft&&!isCreation(text)&&drafts.filter(item=>item.editable).length>1){say('Which project should we complete? Mention its project code or choose Continue in chat on its draft. To start another project, say “Create a new project”.');return;}
@@ -126,6 +186,9 @@ export function useAssistantWorkflows({userId,role,empty,selectedProject,setMess
     finally{working.current=false;setBusy(false)}
   }
   const decide=(item,decision,attachment=false)=>action(async()=>{
+    if(item.threeLayer&&!attachment){
+      await advanceThreeLayer(item,decision);return;
+    }
     const path=attachment?'attachments/':'project-drafts/';
     const updated=await request(path+item.id+'/decision',json('POST',{decision,...(attachment?{preview_token:item.preview_token}:{revision:item.revision})}));
     if(attachment)setMessages(current=>settleAttachmentMessages(current,[updated]));else clearFinished([updated]);
@@ -135,12 +198,14 @@ export function useAssistantWorkflows({userId,role,empty,selectedProject,setMess
     await onChanged?.();
   });
   function resume(item){setActiveId(item.id);say(`Let’s complete ${item.fields.name||'this project'}. ${item.missing.length?'Please provide '+item.missing.join(', ')+'.':'Describe any changes, or review and confirm the draft.'}`,[item.id]);}
-  const reload=item=>action(async()=>putDraft(await request('project-drafts/'+item.id)));
+  const reload=item=>action(async()=>putDraft(item.threeLayer
+    ?governedImport(await request('three-layer/imports/'+item.id),organizationRole,projects)
+    :await request('project-drafts/'+item.id)));
   function reset(){
     generation.current++;reviewId.current=null;history.replaceState(null,'',location.pathname);view.current={fresh:true,ids:[]};persist();
-    setDrafts([]);setAttachments([]);setActiveId(null);setFile(null);setKind('new_project');setAllowAI(false);setExternal(false);setReplacement('');uploadId.current=null;
+    setDrafts([]);setAttachments([]);setActiveId(null);setFile(null);setAllowAI(false);
   }
-  return {role,drafts,attachments,active,busy,file,kind,setKind,allowAI,setAllowAI,external,setExternal,documents,replacement,setReplacement,chooseFile,submit,save,decide,resume,reload,permitted,reset,end:()=>setActiveId(null)};
+  return {role,drafts,attachments,active,busy,file,allowAI,setAllowAI,chooseFile,submit,save,decide,resume,reload,permitted,reset,end:()=>setActiveId(null)};
 }
 
 function ProjectDraftMessage({item,flow}){
@@ -152,6 +217,8 @@ function ProjectDraftMessage({item,flow}){
     <details className="chat-project-draft" open={flow.active?.id===item.id?true:undefined}>
       <summary><strong>{item.fields.name||'New project draft'}</strong> <span>{item.fields.code||'Code needed'} · {states[item.status]}</span></summary>
       {item.source&&<p className="workflow-note">{item.source.filename} · {item.source.sheet}, row {item.source.row}</p>}
+      {item.threeLayer&&<p className="workflow-note">Detected changes: {item.analysis.createCount} create · {item.analysis.updateCount} update.</p>}
+      {item.threeLayer&&item.analysis.projectRows.length>0&&<div className="project-import-rows" aria-label="Detected project changes">{item.analysis.projectRows.map(row=><div key={row.code}><span className={`project-import-action ${row.action}`}>{row.action}</span><b>{row.code}</b><span>{row.name}</span></div>)}</div>}
       {!!item.missing.length&&<p className="workflow-note">Still needed: {item.missing.join(', ')}.</p>}
       {item.warnings?.map((warning,index)=><p className="workflow-note" key={index}>{warning}</p>)}
       {item.issues.map((issue,index)=><p role="alert" key={index}>{issue}</p>)}
@@ -162,12 +229,11 @@ function ProjectDraftMessage({item,flow}){
       </label>)}</div>
       {item.source&&<details><summary>Original worksheet values</summary><dl className="chat-source-values">{Object.entries(item.source.values).map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value==null?'Not provided':String(value)}</dd></div>)}</dl></details>}
       {item.source?.records&&<details><summary>Workbook sources · {item.source.worksheets_scanned?.length||1} sheets inspected</summary>{item.source.records.map((record,index)=><div key={index}><strong>{record.sheet} · row {record.row}</strong><dl className="chat-source-values">{Object.entries(record.values).map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value==null?'Not provided':String(value)}</dd></div>)}</dl></div>)}</details>}
-      {item.source?.mapping&&<details><summary>JSON field mappings · {item.source.mapping_profile?.name}</summary><dl className="chat-source-values">{Object.entries(item.source.mapping).map(([field,mapping])=><div key={field}><dt>{labels[field]||field}</dt><dd>Column {mapping.column} · {mapping.header||'No label'} · {mapping.method}</dd></div>)}</dl><p className="workflow-note">Profile: {item.source.mapping_profile?.profile_id}. Review inferred or configured columns before confirming.</p><details><summary>Applied mapping profile</summary><pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(item.source.mapping_profile,null,2)}</pre></details></details>}
       {error&&<p role="alert">{error}</p>}
       <div className="workflow-actions">
         {item.editable&&<><button className="secondary" disabled={flow.busy||dirty} onClick={()=>flow.resume(item)}>Continue in chat</button><button className="secondary" disabled={flow.busy||!dirty} onClick={save}>Save edits</button></>}
-        {item.can_confirm&&<button className="primary" disabled={flow.busy||dirty} onClick={()=>flow.decide(item,'confirm')}>{flow.role==='admin'?'Confirm and create':'Confirm and request approval'}</button>}
-        {item.can_approve&&<button className="primary" disabled={flow.busy} onClick={()=>flow.decide(item,'approve')}>Approve and create</button>}
+        {item.can_confirm&&<button className="primary" disabled={flow.busy||dirty} onClick={()=>flow.decide(item,'confirm')}>{flow.role==='admin'?'Confirm project changes':'Confirm and request approval'}</button>}
+        {item.can_approve&&<button className="primary" disabled={flow.busy} onClick={()=>flow.decide(item,'approve')}>Approve and apply</button>}
         {(item.editable||item.can_approve)&&<button className="secondary" disabled={flow.busy} onClick={()=>flow.decide(item,'reject')}>Cancel / reject</button>}
         <button className="secondary" disabled={flow.busy} onClick={()=>{setDirty(false);setError('');flow.reload(item)}}>Reload preview</button>
       </div>{dirty&&<p className="workflow-note">Save edits before continuing in chat or confirming.</p>}
@@ -184,7 +250,6 @@ export function WorkflowMessages({flow}){
       {item.preview.rows&&<PreviewRows rows={item.preview.rows} totalRows={item.preview.row_count||item.preview.rows.length}/>}
       {item.preview.excerpt&&<blockquote>{item.preview.excerpt}</blockquote>}
       {item.preview.warnings?.map((warning,index)=><p key={index}>{String(warning)}</p>)}
-      {item.preview.mappings&&<details><summary>Schema and column mappings</summary><pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(item.preview.mappings,null,2)}</pre></details>}
       {item.error&&<p role="alert">{item.error}</p>}
       <div className="workflow-actions">
         {item.can_confirm&&<button className="primary" disabled={flow.busy} onClick={()=>flow.decide(item,'confirm',true)}>Confirm update</button>}
@@ -197,14 +262,13 @@ export function WorkflowMessages({flow}){
 
 export function ChatUpload({flow,disabled}){
   const input=useRef(null);
-  return <><input ref={input} type="file" accept=".xlsx,.pdf" aria-label="Upload Excel or PDF" hidden onChange={event=>{flow.chooseFile(event.target.files?.[0]||null);event.target.value=''}}/>
-    <button className="chat-upload secondary" aria-label="Attach Excel or PDF" title="Attach Excel or PDF" disabled={disabled} onClick={()=>input.current?.click()}><Upload size={18}/></button></>;
+  return <><input ref={input} type="file" accept=".xlsx" aria-label="Upload Excel workbook" hidden onChange={event=>{flow.chooseFile(event.target.files?.[0]||null);event.target.value=''}}/>
+    <button className="chat-upload secondary" aria-label="Attach Excel workbook" title="Attach Excel workbook" disabled={disabled} onClick={()=>input.current?.click()}><Upload size={18}/></button></>;
 }
 export function WorkflowComposer({flow,showConsent}){
   return <div className="workflow-composer">
-    {flow.file&&<div className="chat-file"><span>{flow.file.name}</span><select aria-label="Attachment action" value={flow.kind} disabled={flow.busy} onChange={event=>flow.setKind(event.target.value)}>{Object.entries(kinds).filter(([key])=>flow.file.name.toLowerCase().endsWith('.pdf')?key==='pdf':key!=='pdf'&&(!managerKinds.has(key)||flow.permitted)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select><button aria-label="Remove attachment" disabled={flow.busy} onClick={()=>flow.chooseFile(null)}><X size={14}/></button></div>}
+    {flow.file&&<div className="chat-file"><span>{flow.file.name}</span><small>Describe what to create or update, or send without instructions for analysis.</small><button aria-label="Remove attachment" disabled={flow.busy} onClick={()=>flow.chooseFile(null)}><X size={14}/></button></div>}
     {flow.active&&<div className="chat-draft-context"><span>Draft: {flow.active.fields.name||'New project'}</span><button disabled={flow.busy} onClick={flow.end}>Return to general chat</button></div>}
     {!flow.file&&showConsent&&flow.permitted&&<label className="chat-consent"><input type="checkbox" checked={flow.allowAI} onChange={event=>flow.setAllowAI(event.target.checked)}/>Allow AI to interpret my description and current draft.</label>}
-    {flow.file&&flow.kind==='pdf'&&<><label className="chat-file">Document version<select aria-label="Document version" value={flow.replacement} onChange={event=>flow.setReplacement(event.target.value)}><option value="">New evidence document</option>{flow.documents.filter(doc=>doc.kind==='pdf'&&doc.approval_status==='approved').map(doc=><option key={doc.id} value={doc.id}>Replace {doc.filename}</option>)}</select></label><label className="chat-consent"><input type="checkbox" checked={flow.external} onChange={event=>flow.setExternal(event.target.checked)}/>Permit external PDF embedding after Admin approval.</label></>}
   </div>;
 }

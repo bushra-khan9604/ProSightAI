@@ -88,9 +88,10 @@ class RAGStore:
             raise ValueError("Retrieval limit must be between 1 and 20")
         if not query.strip() or document_ids == []:
             return RAGEvidence(query=query, project_code=project_code, evidence=[])
-        filters = [
-            {"project_code": project_code}, {"approval_status": "approved"},
-        ]
+        project_filter = {"project_code": project_code} if project_code == "COMPANY" else {
+            "$or": [{"project_code": project_code}, {"project_code": "COMPANY"}]
+        }
+        filters = [project_filter, {"approval_status": "approved"}]
         if document_ids is not None:
             filters.append({"document_id": {"$in": document_ids}})
         where = {"$and": filters}
@@ -205,7 +206,7 @@ class RAGStore:
     @staticmethod
     def _is_retrievable(metadata: dict[str, Any], project_code: str) -> bool:
         return (
-            metadata.get("project_code") == project_code
+            metadata.get("project_code") in {project_code, "COMPANY"}
             and metadata.get("approval_status") == "approved"
         )
 

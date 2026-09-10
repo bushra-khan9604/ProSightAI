@@ -1,17 +1,42 @@
 # Project creation JSON mapping
 
-Excel project creation inspects all worksheets locally and reads
-`src/prosight/schemas/project-mapping.json` instead of hardcoded column aliases.
-The supplied profile supports the reference Portfolio register and the existing
-Projects schema. No new account, API key or database migration is needed.
+## Primary three-layer mapping contract
 
-There are two JSON Schema documents:
+Redesigned mode uses two separate JSON layers:
 
-- `project-mapping.schema.json` describes the configurable mapping profile.
-- `project.schema.json` describes a complete project record. The backend also
-  validates schedule ordering and required ISO dates before creation.
+1. `construction-ingestion-catalog.json` is platform-controlled. It defines the
+   nine construction publication entities, their safe importable fields, logical
+   types, required fields, exact business keys, and default aliases. Tenant,
+   project-scope, identifier, audit, and generated columns are not configurable.
+2. Organization mapping profiles conform to
+   `organization-ingestion-profile.schema.json`. An organization can define its
+   own worksheet names and source-column aliases. The backend compiles those
+   labels against the platform catalog and persists each accepted definition as
+   an immutable organization-scoped mapping profile version with a checksum.
 
-## Customize an organization's profile
+The Project Command Center reads and writes these profiles through
+`/api/three-layer/catalog` and `/api/three-layer/mappings`. Mapping JSON is an
+organization control and is not displayed in the AI Assistant composer. The
+assistant accepts an XLSX workbook plus an optional natural-language
+instruction, prepares it through `/api/three-layer/imports/prepare`, and uses
+the governed submit, decision, and publication endpoints. Project lists come
+from `/api/three-layer/projects` and therefore use `construction.projects`, not
+the legacy `prosight` project table.
+
+An omitted profile selects the newest project mapping for the organization. If
+none exists, the backend creates the deterministic organization-scoped default
+from the current platform catalog. Ambiguous worksheet or header aliases fail
+validation and require correction; they are never guessed. Organization and
+project IDs are derived from the authenticated membership scope and are never
+taken from organization JSON or spreadsheet cells.
+
+The assistant classifies every valid project row by its organization-scoped
+project code. Codes not currently present are proposed as creates; existing
+codes are proposed as updates. An instruction-less upload is analyzed and held
+at review-ready while the assistant asks what should be applied. An instruction
+does not bypass validation, review, approval, or publication controls.
+
+## Legacy compatibility profile
 
 Copy the default profile to an organization-specific JSON file. Set the backend
 environment variable `PROSIGHT_PROJECT_MAPPING_PATH` to that file's absolute path,
@@ -68,19 +93,18 @@ lookup or automatic conversion is performed.
 
 ## Review and approvals
 
-Upload an XLSX file using the chat attachment button and choose Create project
-drafts. Expand a draft's **JSON field mappings** section to see source columns,
-headers, mapping methods, and the applied JSON profile. Original cells remain
-available separately. Each draft stores the complete profile snapshot and its
-fingerprint. Changing a profile cannot change an existing preview. A retry using
-the same upload ID with a different profile is rejected; select the file again
-to prepare a new preview.
+Upload an XLSX file using the chat attachment button and optionally describe
+what should be created or updated. The assistant shows the normalized project
+rows and whether each row is a create or update; mapping JSON remains in the
+Project Command Center. Each import binds the immutable profile version and its
+checksum. Changing a profile cannot change an existing preview.
 
 Application roles, required project fields, existing-project protection, size
 limits, and approval rules remain enforced by the backend. A profile cannot
-weaken them or run SQL, scripts or arbitrary transformations. This prototype has
-one organization-wide server profile; per-tenant configuration and an in-app
-profile editor are not included.
+weaken them or run SQL, scripts or arbitrary transformations. This file-based
+profile remains available only to the legacy project-draft parser. Redesigned
+mode provides per-organization, versioned profiles and a separate in-app JSON
+editor in the Project Command Center.
 
 Authenticated Admins and Project Managers can inspect the active profile and both
 schema definitions at `GET /api/project-drafts/mapping-profile`.

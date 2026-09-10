@@ -1,13 +1,21 @@
 """PostgreSQL backend contracts, SQL binding and pgvector publication tests."""
 import os
+import json
 import tempfile
 import unittest
+import uuid
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from prosight.config import get_settings
-from prosight.db.postgres import PostgresRepository, RepositoryConnection, postgres_query
+from prosight.db.postgres import (
+    AuthenticatedRepositoryConnection,
+    PostgresRepository,
+    REDESIGN_SCHEMA_CHECK_SQL,
+    RepositoryConnection,
+    postgres_query,
+)
 from prosight.db.manage import _migration_plan, apply_pending_migrations, import_sqlite
 from prosight.rag.pgvector_store import PgVectorStore, HYBRID_SQL
 from prosight.repository import ProjectRepository, DEFAULT_DATA
@@ -31,6 +39,69 @@ class BindingTests(unittest.TestCase):
         pool.getconn.return_value.commit.assert_called_once()
         connection.close()
         pool.putconn.assert_called_once()
+
+    def test_authenticated_connection_binds_claims_before_queries(self):
+        pool = Mock()
+        user_id = uuid.uuid4()
+        connection = AuthenticatedRepositoryConnection(pool, user_id)
+        with connection:
+            connection.execute_native("select * from construction.projects")
+        claims = json.dumps(
+            {"role": "authenticated", "sub": str(user_id)},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self.assertEqual(
+            [
+                unittest.mock.call("SET LOCAL ROLE authenticated"),
+                unittest.mock.call(
+                    "SELECT pg_catalog.set_config(%s, %s, true)",
+                    ("request.jwt.claim.sub", str(user_id)),
+                ),
+                unittest.mock.call(
+                    "SELECT pg_catalog.set_config(%s, %s, true)",
+                    ("request.jwt.claims", claims),
+                ),
+                unittest.mock.call(
+                    "SET LOCAL search_path = construction, ingestion, semantic, extensions, pg_catalog"
+                ),
+                unittest.mock.call("SET LOCAL statement_timeout = '30s'"),
+                unittest.mock.call("select * from construction.projects", None),
+            ],
+            pool.getconn.return_value.execute.call_args_list,
+        )
+        pool.getconn.return_value.commit.assert_called_once()
+
+    def test_authenticated_connection_rejects_unverified_or_invalid_identity(self):
+        pool = Mock()
+        for value in (str(uuid.uuid4()), "not-a-uuid", None):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "server-verified UUID"):
+                    AuthenticatedRepositoryConnection(pool, value)
+        pool.getconn.assert_not_called()
+
+    def test_authenticated_connection_rolls_back_and_cannot_be_reused(self):
+        pool = Mock()
+        connection = AuthenticatedRepositoryConnection(pool, uuid.uuid4())
+        with self.assertRaisesRegex(ValueError, "boom"):
+            with connection:
+                raise ValueError("boom")
+        pool.getconn.return_value.rollback.assert_called_once()
+        with self.assertRaisesRegex(RuntimeError, "no longer active"):
+            connection.execute_native("select 1")
+
+    def test_legacy_connection_setup_remains_unchanged(self):
+        pool = Mock()
+        connection = RepositoryConnection(pool)
+        self.assertEqual(
+            [
+                unittest.mock.call("SET LOCAL ROLE prosight_backend"),
+                unittest.mock.call("SET LOCAL search_path = prosight, extensions, pg_catalog"),
+                unittest.mock.call("SET LOCAL statement_timeout = '30s'"),
+            ],
+            pool.getconn.return_value.execute.call_args_list,
+        )
+        connection.close()
 
     def test_failed_repository_transaction_rolls_back(self):
         pool=Mock()
@@ -61,13 +132,34 @@ class ConfigurationTests(unittest.TestCase):
 
 class SchemaMigrationTests(unittest.TestCase):
     @patch('prosight.db.postgres.ConnectionPool')
+    def test_redesign_schema_check_uses_catalog_only_and_is_cached(self, pool_class):
+        repository = PostgresRepository('postgresql://test:test@localhost/test')
+        connection = pool_class.return_value.getconn.return_value
+        connection.execute.return_value.fetchone.return_value = {
+            'has_memberships': True,
+            'has_ingestion': True,
+            'has_semantic': True,
+            'has_publish_rpc': True,
+            'has_index_rpc': True,
+            'can_enter_authenticated': True,
+        }
+
+        repository.ensure_redesign_schema()
+        repository.ensure_redesign_schema()
+
+        connection.execute.assert_called_once_with(REDESIGN_SCHEMA_CHECK_SQL)
+        self.assertNotIn('prosight.', REDESIGN_SCHEMA_CHECK_SQL)
+        connection.rollback.assert_called_once()
+        pool_class.return_value.putconn.assert_called_once_with(connection)
+
+    @patch('prosight.db.postgres.ConnectionPool')
     def test_missing_workforce_migration_closes_pool_and_names_remedy(self, pool_class):
         repository = PostgresRepository('postgresql://test:test@localhost/test')
         connection = Mock()
         connection.execute.return_value.fetchall.return_value = [{'version': 1}]
         repository.connect = Mock(return_value=connection)
 
-        with self.assertRaisesRegex(RuntimeError, r'version 2.*found 1.*manage migrate'):
+        with self.assertRaisesRegex(RuntimeError, r'version 3.*found 1.*manage migrate'):
             repository.ensure_schema()
 
         connection.close.assert_called_once()
@@ -77,7 +169,9 @@ class SchemaMigrationTests(unittest.TestCase):
     def test_current_schema_is_checked_only_once(self, pool_class):
         repository = PostgresRepository('postgresql://test:test@localhost/test')
         connection = Mock()
-        connection.execute.return_value.fetchall.return_value = [{'version': 1}, {'version': 2}]
+        connection.execute.return_value.fetchall.return_value = [
+            {'version': 1}, {'version': 2}, {'version': 3}
+        ]
         repository.connect = Mock(return_value=connection)
 
         repository.ensure_schema()
@@ -87,7 +181,7 @@ class SchemaMigrationTests(unittest.TestCase):
         pool_class.return_value.close.assert_not_called()
 
     def test_migration_plan_rejects_a_version_gap(self):
-        self.assertEqual([2], [version for version, _ in _migration_plan({1})])
+        self.assertEqual([2, 3], [version for version, _ in _migration_plan({1})])
         with self.assertRaisesRegex(ValueError, 'not contiguous'):
             _migration_plan({2})
 
@@ -97,13 +191,15 @@ class SchemaMigrationTests(unittest.TestCase):
         relation.fetchone.return_value = ('prosight.schema_version',)
         versions = Mock()
         versions.fetchall.return_value = [(1,)]
-        connection.execute.side_effect = [Mock(), relation, versions, Mock()]
+        connection.execute.side_effect = [Mock(), relation, versions, Mock(), Mock()]
 
-        self.assertEqual([2], apply_pending_migrations(connection))
+        self.assertEqual([2, 3], apply_pending_migrations(connection))
 
-        applied_sql = connection.execute.call_args_list[-1].args[0]
-        self.assertIn('CREATE TABLE employees', applied_sql)
-        self.assertIn('INSERT INTO schema_version(version) VALUES (2)', applied_sql)
+        workforce_sql = connection.execute.call_args_list[-2].args[0]
+        storage_sql = connection.execute.call_args_list[-1].args[0]
+        self.assertIn('CREATE TABLE employees', workforce_sql)
+        self.assertIn("INSERT INTO storage.buckets", storage_sql)
+        self.assertIn('INSERT INTO schema_version(version) VALUES (3)', storage_sql)
 
 
 class PgVectorTests(unittest.TestCase):
@@ -155,10 +251,10 @@ class PgVectorTests(unittest.TestCase):
         }]
         result=self.store.search('report','P1',document_ids=['D1'])
         params=self.connection.execute_native.call_args.args[1]
-        self.assertEqual('P1',params['project'])
+        self.assertEqual(['P1','COMPANY'],params['projects'])
         self.assertEqual(['D1'],params['documents'])
         self.assertEqual('Report.pdf, page 1',result.evidence[0].citation)
-        self.assertEqual(2,HYBRID_SQL.count("c.project_code=%(project)s"))
+        self.assertEqual(2,HYBRID_SQL.count("c.project_code=ANY(%(projects)s::text[])"))
 
 
 class ImportPreviewTests(unittest.TestCase):

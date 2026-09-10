@@ -28,6 +28,8 @@ it did not update `prosight_env`. Stop the old backend before restarting it.
 Reviewed migrations live in `supabase/migrations`. Version 1 creates the private
 `prosight` schema, pgvector indexes, and backend role. Version 2 adds the governed
 employee, training, attendance, payroll, manpower, and deployment tables. The
+migration at version 3 creates the private `prosight-pdfs` Storage bucket and adds
+immutable object references to approved PDF metadata. The
 migration command reads `prosight.schema_version` and applies only the missing
 ordered suffix, so it is safe to run against the existing version-1 installation.
 
@@ -43,7 +45,7 @@ python -m prosight.db.manage import-sqlite data/prosight.db --apply
 The migration command executes pending SQL transactionally and records each version
 in `prosight.schema_version`; it does not update the Supabase CLI migration-history
 table. Reconcile that history before adopting CLI-driven deployments. Startup
-requires schema version 2, names the migration command when an older version is
+requires schema version 3, names the migration command when an older version is
 found, and never creates tables or loads demo data. `prosight init` is intentionally
 unavailable with PostgreSQL.
 
@@ -85,15 +87,15 @@ authenticates with an administrative credential before assuming that role; use a
 dedicated least-privilege login for production and reserve administrator
 credentials for migrations.
 
-Tenant membership and per-project authorization, private Supabase Storage for
-original PDFs, durable ingestion workers, backup/restore verification, monitoring,
+Tenant membership and per-project authorization, durable ingestion workers,
+backup/restore verification, monitoring,
 and agent-flow concurrency remain separate production steps. Local PDF paths and
 in-process jobs require particular attention before deploying multiple instances.
 
 ## Verified project state (2026-09-08)
 
 - Hosted connection succeeds through the session pooler; pgvector version 0.8.2.
-- ProSight schema versions 1 and 2 are installed. The seven additive workforce
+- ProSight schema versions 1 through 3 are installed. The seven additive workforce
   tables exist with forced RLS and remain empty; no reference-workbook rows were
   imported by the migration.
 - Hosted repository project reads, invoice aggregation, and portfolio summary pass.

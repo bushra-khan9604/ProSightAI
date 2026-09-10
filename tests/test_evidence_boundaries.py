@@ -69,13 +69,26 @@ class DocumentVisibilityTests(unittest.TestCase):
         repository.list_documents.side_effect = [[{
             "id": "D1", "kind": "pdf", "approval_status": "approved",
             "index_status": "ready", "status": "ready",
-        }], []]
+        }], [], [], []]
         store.search.return_value = RAGEvidence(query="progress", project_code="P1", evidence=[
             EvidenceItem(text="private", citation="Report.pdf, page 1", metadata={
                 "document_id": "D1", "project_code": "P1", "approval_status": "approved"
             })
         ])
         self.assertEqual([], RAGAgent(store, repository).retrieve("progress", "P1").evidence)
+
+    def test_company_documents_are_visible_in_every_project_scope(self):
+        repository, store = Mock(), Mock()
+        company = {"id": "C1", "kind": "pdf", "approval_status": "approved",
+                   "index_status": "ready", "status": "ready"}
+        repository.list_documents.side_effect = [[], [company], [], [company]]
+        store.search.return_value = RAGEvidence(query="policy", project_code="P1", evidence=[
+            EvidenceItem(text="company policy", citation="Policy.pdf, page 1", metadata={
+                "document_id": "C1", "project_code": "COMPANY", "approval_status": "approved"
+            })
+        ])
+        result = RAGAgent(store, repository).retrieve("policy", "P1")
+        self.assertEqual(["C1"], [item.metadata["document_id"] for item in result.evidence])
 
 
 class RetrievalTests(unittest.TestCase):
@@ -120,6 +133,17 @@ class RetrievalTests(unittest.TestCase):
         result = self.store.search("commissioning", "P1", document_ids=["two"])
         self.assertEqual(["two"], [e.metadata["document_id"] for e in result.evidence])
         self.assertEqual([], self.store.search("commissioning", "P1", document_ids=[]).evidence)
+
+    def test_company_chunks_are_shared_without_exposing_other_projects(self):
+        self.store.add_chunks([
+            self.chunk("project", "commissioning"),
+            self.chunk("company", "company commissioning policy", project_code="COMPANY"),
+            self.chunk("other", "commissioning", project_code="P2"),
+        ])
+        result = self.store.search("commissioning", "P1")
+        self.assertEqual({"project", "company"}, {
+            item.metadata["document_id"] for item in result.evidence
+        })
 
     def test_lexical_match_preserves_query_phrase_order(self):
         terms = self.store._terms("tower progress")

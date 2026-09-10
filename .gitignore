@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.db
 .venv/
+.runtime_deps/
 .env
 frontend/node_modules/
 frontend/dist/

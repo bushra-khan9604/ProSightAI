@@ -11,6 +11,7 @@ from typing import Literal
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = ROOT / ".env"
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+SchemaMode = Literal["legacy", "compare", "redesigned"]
 REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 
@@ -48,6 +49,11 @@ class Settings:
     auth_provider: str = "local"
     supabase_url: str = ""
     supabase_publishable_key: str = ""
+    supabase_secret_key: str = ""
+    supabase_storage_bucket: str = "prosight-pdfs"
+    schema_mode: SchemaMode = "legacy"
+    semantic_projection_version: int = 1
+    semantic_chunking_version: str = "pdf-heading-pages-v1"
 
 
 def _reasoning_effort(name: str, default: ReasoningEffort) -> ReasoningEffort:
@@ -74,6 +80,17 @@ def get_settings() -> Settings:
     public_key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
     if auth_provider == "supabase" and public_key and not public_key.startswith("sb_publishable_"):
         raise ValueError("SUPABASE_PUBLISHABLE_KEY must be a publishable key (sb_publishable_)")
+    schema_mode = os.environ.get("PROSIGHT_SCHEMA_MODE", "legacy").strip().lower()
+    if schema_mode not in {"legacy", "compare", "redesigned"}:
+        raise ValueError("PROSIGHT_SCHEMA_MODE must be legacy, compare, or redesigned")
+    projection_version = int(os.environ.get("PROSIGHT_SEMANTIC_PROJECTION_VERSION", "1"))
+    if projection_version < 1:
+        raise ValueError("PROSIGHT_SEMANTIC_PROJECTION_VERSION must be a positive integer")
+    chunking_version = os.environ.get(
+        "PROSIGHT_SEMANTIC_CHUNKING_VERSION", "pdf-heading-pages-v1"
+    ).strip()
+    if not chunking_version:
+        raise ValueError("PROSIGHT_SEMANTIC_CHUNKING_VERSION is required")
     return Settings(
         ai_provider=os.environ.get("PROSIGHT_AI_PROVIDER", "auto").lower(),
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
@@ -93,4 +110,9 @@ def get_settings() -> Settings:
         auth_provider=auth_provider,
         supabase_url=os.environ.get("SUPABASE_URL", "").rstrip("/"),
         supabase_publishable_key=os.environ.get("SUPABASE_PUBLISHABLE_KEY", ""),
+        supabase_secret_key=os.environ.get("SUPABASE_SECRET_KEY", ""),
+        supabase_storage_bucket=os.environ.get("SUPABASE_STORAGE_BUCKET", "prosight-pdfs"),
+        schema_mode=schema_mode,  # type: ignore[arg-type]
+        semantic_projection_version=projection_version,
+        semantic_chunking_version=chunking_version,
     )
