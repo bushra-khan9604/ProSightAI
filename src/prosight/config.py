@@ -39,6 +39,11 @@ class Settings:
     orchestrator_reasoning: ReasoningEffort
     writer_reasoning: ReasoningEffort
     embedding_model: str
+    embedding_batch_size: int
+    embedding_retry_count: int
+    retrieval_candidate_count: int
+    retrieval_evidence_count: int
+    retrieval_confidence_threshold: float
     data_backend: str
     supabase_url: str
     supabase_publishable_key: str
@@ -55,6 +60,28 @@ def _reasoning_effort(name: str, default: ReasoningEffort) -> ReasoningEffort:
     return value  # type: ignore[return-value]
 
 
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    """Read a bounded integer without allowing unsafe runtime values."""
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    """Read a bounded floating-point setting."""
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError as error:
+        raise ValueError(f"{name} must be a number") from error
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 def get_settings() -> Settings:
     """Load `.env` and return the latest process-level configuration."""
     load_env_file()
@@ -65,6 +92,13 @@ def get_settings() -> Settings:
         orchestrator_reasoning=_reasoning_effort("OPENAI_ORCHESTRATOR_REASONING", "none"),
         writer_reasoning=_reasoning_effort("OPENAI_WRITER_REASONING", "low"),
         embedding_model=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        embedding_batch_size=_bounded_int("RAG_EMBEDDING_BATCH_SIZE", 64, 1, 256),
+        embedding_retry_count=_bounded_int("RAG_EMBEDDING_RETRY_COUNT", 5, 1, 10),
+        retrieval_candidate_count=_bounded_int("RAG_RETRIEVAL_CANDIDATES", 30, 5, 100),
+        retrieval_evidence_count=_bounded_int("RAG_EVIDENCE_COUNT", 8, 1, 20),
+        retrieval_confidence_threshold=_bounded_float(
+            "RAG_CONFIDENCE_THRESHOLD", 0.25, -1.0, 1.0
+        ),
         data_backend=os.environ.get("PROSIGHT_DATA_BACKEND", "auto").lower(),
         supabase_url=os.environ.get("SUPABASE_URL", ""),
         supabase_publishable_key=os.environ.get(

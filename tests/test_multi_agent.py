@@ -50,6 +50,12 @@ class MultiAgentTests(unittest.TestCase):
         plan = self.orchestrator.plan("What does the PDF report say?", "PRJ-2024-001")
         self.assertEqual(["rag", "writer"], plan.agents)
 
+    def test_project_scoped_unstructured_question_defaults_to_rag(self):
+        plan = self.orchestrator.plan(
+            "What fire rating is required for the service corridor?", "PRJ-2024-001"
+        )
+        self.assertEqual(["rag", "writer"], plan.agents)
+
     def test_routes_combined_query(self):
         plan = self.orchestrator.plan(
             "Compare project progress with the monthly report", "PRJ-2024-001"

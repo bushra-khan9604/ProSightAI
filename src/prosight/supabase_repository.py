@@ -126,6 +126,10 @@ class SupabaseProjectRepository:
     def store_document_file(self, document: dict[str, Any], path) -> None:
         self.user.upload(document["storage_bucket"], document["storage_key"], path.read_bytes())
 
+    def load_document_file(self, document: dict[str, Any]) -> bytes:
+        """Download a private source object for a detached ingestion task."""
+        return self.service.download(document["storage_bucket"], document["storage_key"])
+
     def store_portfolio_file(self, record: dict[str, Any], path) -> None:
         self.user.upload(record["storage_bucket"], record["storage_key"], path.read_bytes())
 
@@ -142,6 +146,21 @@ class SupabaseProjectRepository:
 
     def update_document_status(self, document_id: str, status: str) -> None:
         self.db.update("documents", {"status": status, "updated_at": self._now()}, id=f"eq.{document_id}")
+
+    def complete_document_ingestion(
+        self, document_id: str, job_id: str, chunk_count: int
+    ) -> None:
+        """Atomically publish a fully embedded document and clear its completed job."""
+        self.service.rpc("complete_document_ingestion", {
+            "target_document_id": document_id,
+            "target_job_id": job_id,
+            "chunk_count": chunk_count,
+        })
+        # Safe with both RPC versions: the current migration deletes atomically,
+        # while this clears the row when an older hosted function is still active.
+        self.service.delete(
+            "ingestion_jobs", id=f"eq.{job_id}", document_id=f"eq.{document_id}"
+        )
 
     def update_document_date(self, document_id: str, reporting_date: str | None,
                              effective_date: str, date_status: str) -> None:
@@ -171,17 +190,36 @@ class SupabaseProjectRepository:
             id=f"eq.{job['document_id']}",
             limit="1",
         )
-        return {**job, **(documents[0] if documents else {})}
+        document = documents[0] if documents else {}
+        return {
+            **document,
+            "detected_reporting_date": document.get("reporting_date"),
+            **job,
+        }
 
     def list_jobs(self, project_code: str) -> list[dict[str, Any]]:
-        documents = self.db.select("documents", select="id,kind,filename,checksum", project_code=f"eq.{project_code}")
+        documents = self.db.select(
+            "documents",
+            select="id,kind,filename,checksum,reporting_date,effective_date,date_status",
+            project_code=f"eq.{project_code}",
+        )
         by_id = {item["id"]: item for item in documents}
         ids = list(by_id)
         if not ids:
             return []
         joined = ",".join(ids)
         rows = self.db.select("ingestion_jobs", document_id=f"in.({joined})", order="created_at.desc")
-        return [{**row, **by_id.get(row["document_id"], {})} for row in rows]
+        return [
+            {
+                **{key: value for key, value in by_id.get(row["document_id"], {}).items()
+                   if key != "id"},
+                "detected_reporting_date": by_id.get(row["document_id"], {}).get(
+                    "reporting_date"
+                ),
+                **row,
+            }
+            for row in rows
+        ]
 
     def update_job(self, job_id: str, status: str, progress: int, message: str | None = None,
                    change_request_id: str | None = None) -> dict[str, Any] | None:
@@ -193,11 +231,47 @@ class SupabaseProjectRepository:
         rows = self.service.update("ingestion_jobs", payload, id=f"eq.{job_id}")
         return rows[0] if rows else None
 
-    def recover_interrupted_jobs(self) -> None:
-        self.service.update("ingestion_jobs", {
-            "status": "failed", "progress": 100,
-            "message": "Processing was interrupted by a server restart", "updated_at": self._now(),
-        }, status="in.(queued,processing,embedding)")
+    def claim_job(self, job_id: str) -> bool:
+        """Atomically claim a queued job through a conditional update."""
+        rows = self.service.update(
+            "ingestion_jobs",
+            {"status": "processing", "progress": 5, "message": "Claimed for processing",
+             "updated_at": self._now()},
+            id=f"eq.{job_id}", status="eq.queued",
+        )
+        return bool(rows)
+
+    def recover_interrupted_jobs(self) -> list[dict[str, Any]]:
+        """Reset interrupted PDFs to queued and return them for bounded resubmission."""
+        self.service.delete("ingestion_jobs", status="eq.ready")
+        jobs = self.service.select(
+            "ingestion_jobs", status="in.(queued,processing,embedding)", order="created_at.asc"
+        )
+        recovered: list[dict[str, Any]] = []
+        for job in jobs:
+            documents = self.service.select(
+                "documents", id=f"eq.{job['document_id']}", limit="1"
+            )
+            if not documents:
+                self.update_job(job["id"], "failed", 100, "The source document no longer exists")
+                continue
+            document = documents[0]
+            if document["kind"] != "pdf":
+                self.update_job(
+                    job["id"], "failed", 100,
+                    "Workbook processing was interrupted; upload the workbook again",
+                )
+                self.update_document_status(document["id"], "failed")
+                continue
+            self.service.update(
+                "ingestion_jobs",
+                {"status": "queued", "progress": 0, "message": "Recovered after restart",
+                 "updated_at": self._now()},
+                returning=False, id=f"eq.{job['id']}",
+            )
+            self.update_document_status(document["id"], "queued")
+            recovered.append({"job": {**job, "status": "queued"}, "document": document})
+        return recovered
 
     def create_change_request(self, action: str, project_code: str, payload: dict[str, Any],
                               preview: dict[str, Any], requested_by: str) -> dict[str, Any]:
@@ -214,6 +288,41 @@ class SupabaseProjectRepository:
                 "project_code": project_code, "change_request_id": change["id"],
                 "title": "Approval required",
                 "message": f"{role.replace('_', ' ').title()} submitted a {action.replace('_', ' ')} request.",
+            } for item in admins], upsert=True)
+        return change
+
+    def create_pdf_approval(
+        self, job_id: str, document: dict[str, Any], requested_by: str
+    ) -> dict[str, Any]:
+        """Create the mandatory approval record for a validated PDF."""
+        auth = current_auth.get()
+        requester_id = auth.user_id if auth else document.get("uploaded_by")
+        requester_role = auth.role if auth else requested_by
+        if not requester_id:
+            raise PermissionError("The PDF uploader could not be identified")
+        change = self.service.insert("change_requests", {
+            "id": str(uuid.uuid4()), "action": "pdf_ingestion",
+            "project_code": document["project_code"],
+            "payload": {"job_id": job_id, "document_id": document["id"]},
+            "preview": {
+                "before": None,
+                "after": {
+                    "filename": document["filename"],
+                    "reporting_date": document.get("reporting_date"),
+                    "effective_date": document.get("effective_date"),
+                    "date_status": document.get("date_status"),
+                },
+            },
+            "status": "pending", "requested_by": requester_id,
+            "requested_role": requester_role,
+        })[0]
+        admins = self.service.select("profiles", select="id", role="eq.admin")
+        if admins:
+            self.service.insert("notifications", [{
+                "recipient_user_id": item["id"], "event_type": "approval_required",
+                "project_code": document["project_code"],
+                "change_request_id": change["id"], "title": "PDF approval required",
+                "message": f"{requester_role.replace('_', ' ').title()} uploaded {document['filename']}.",
             } for item in admins], upsert=True)
         return change
 
@@ -256,6 +365,32 @@ class SupabaseProjectRepository:
             "status": decision, "decided_by": actor_id, "decided_role": actor_role,
             "decided_at": self._now(),
         }, id=f"eq.{change_id}", status="eq.pending")
+        jobs = self.service.select(
+            "ingestion_jobs", select="id,document_id",
+            change_request_id=f"eq.{change_id}",
+        )
+        terminal = (
+            "processing"
+            if decision == "approved" and change["action"] == "pdf_ingestion"
+            else "ready" if decision == "approved" else "rejected"
+        )
+        if jobs:
+            for document_id in {job["document_id"] for job in jobs}:
+                self.service.update(
+                    "documents", {"status": terminal, "updated_at": self._now()},
+                    returning=False, id=f"eq.{document_id}",
+                )
+            if terminal == "ready":
+                self.service.delete(
+                    "ingestion_jobs", change_request_id=f"eq.{change_id}"
+                )
+            else:
+                self.service.update(
+                    "ingestion_jobs",
+                    {"status": terminal, "progress": 65 if terminal == "processing" else 100,
+                     "message": f"Change {decision}", "updated_at": self._now()},
+                    returning=False, change_request_id=f"eq.{change_id}",
+                )
         self.service.update("notifications", {"read_at": self._now()},
                             change_request_id=f"eq.{change_id}", event_type="eq.approval_required")
         if change["requested_by"] != actor_id:
@@ -274,6 +409,8 @@ class SupabaseProjectRepository:
         if action == "excel_import":
             for project in payload.get("projects", []):
                 self.service.insert("projects", self._project_row(project), upsert=True)
+        elif action == "pdf_ingestion":
+            return
         elif action == "record_delete":
             self.service.delete("projects", code=f"eq.{code}")
         elif action in {"contact_update", "activity_import", "resource_import", "milestone_update"}:

@@ -77,10 +77,27 @@ class SupabaseGateway:
         params.update(filters)
         return self.request("GET", f"/rest/v1/{table}?{self.query(**params)}") or []
 
-    def count(self, table: str) -> int:
+    def select_all(
+        self, table: str, *, select: str = "*", page_size: int = 1000,
+        **filters: Any,
+    ) -> list[dict[str, Any]]:
+        """Read every matching row without depending on the Data API row cap."""
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = self.select(
+                table, select=select, limit=str(page_size), offset=str(offset), **filters
+            )
+            rows.extend(page)
+            if len(page) < page_size:
+                return rows
+            offset += page_size
+
+    def count(self, table: str, **filters: Any) -> int:
         """Return an exact table count without the Data API row limit."""
+        params = {"select": "*", **filters}
         request = urllib.request.Request(
-            f"{self.url}/rest/v1/{table}?select=*",
+            f"{self.url}/rest/v1/{table}?{self.query(**params)}",
             headers=self._headers({
                 "Accept": "application/json", "Prefer": "count=exact", "Range": "0-0",
             }),

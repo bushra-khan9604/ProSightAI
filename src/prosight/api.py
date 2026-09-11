@@ -202,12 +202,40 @@ def create_app(repository=None) -> FastAPI:
     @app.get("/health")
     @app.get("/api/health")
     def health() -> dict:
+        rag_health = {
+            "status": "unavailable",
+            "database": "ready" if not use_supabase else "unknown",
+            "openai_configured": bool(settings.openai_api_key),
+            "embedding_model": settings.embedding_model,
+            "pending_jobs": None,
+            "failed_jobs": None,
+        }
+        if use_supabase:
+            try:
+                runtime.repository.service.select(
+                    "document_chunks", select="id", limit="1"
+                )
+                rag_health["database"] = "ready"
+            except Exception:
+                rag_health["database"] = "unavailable"
+        if runtime.rag_store:
+            try:
+                rag_health = {
+                    **rag_health,
+                    **runtime.rag_store.health(),
+                    "database": "ready",
+                }
+            except Exception:
+                logging.getLogger("prosight").exception("rag_health_check_failed")
+                rag_health["status"] = "degraded"
+                rag_health["database"] = "unavailable"
         return {
             "status": "ok",
             "llm_provider": "openai",
-            "model": get_settings().openai_model,
+            "model": settings.openai_model,
             "rag_available": runtime.rag_store is not None,
             "data_backend": "supabase" if use_supabase else "sqlite",
+            "rag": rag_health,
         }
 
     @app.get("/api/me")
@@ -794,9 +822,17 @@ def create_app(repository=None) -> FastAPI:
     ) -> dict:
         _require_role(role, {"admin"}, "Only Admin can approve or reject changes")
         try:
-            return runtime.repository.decide_change_request(
+            change = runtime.repository.get_change_request(change_id)
+            if not change:
+                raise KeyError("Change request not found")
+            result = runtime.repository.decide_change_request(
                 change_id, "approved" if decision == "approve" else "rejected", role
             )
+            if decision == "approve" and change["action"] == "pdf_ingestion":
+                if not runtime.ingestion:
+                    raise ValueError("RAG runtime unavailable")
+                runtime.ingestion.resume_approved_pdf(change["payload"]["job_id"])
+            return result
         except PermissionError as error:
             raise HTTPException(status_code=403, detail=str(error)) from error
         except KeyError as error:

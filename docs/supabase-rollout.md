@@ -14,9 +14,9 @@ Configure the repository-root `.env` from `.env.example`:
 - `OPENAI_API_KEY` and `OPENAI_EMBEDDING_MODEL=text-embedding-3-small`
 - `PROSIGHT_APP_URL`
 - `PROSIGHT_BOOTSTRAP_ADMIN_EMAIL`
-- a randomly generated `EMBEDDING_WORKER_SECRET`
+- optional `RAG_*` tuning values documented in `.env.example`
 
-Never expose the service-role key, database URL, OpenAI key, or worker secret
+Never expose the service-role key, database URL, or OpenAI key
 to Vite. Only variables prefixed `VITE_` are bundled into the browser.
 
 ## 2. Auth and schema
@@ -36,33 +36,12 @@ email. The migration command promotes that existing profile to `admin`. This is
 the only automated elevation; later role and membership changes are made in the
 Supabase dashboard.
 
-## 3. Edge Functions and scheduler secrets
+## 3. In-application RAG
 
-```powershell
-supabase secrets set OPENAI_API_KEY=YOUR_OPENAI_KEY `
-  OPENAI_EMBEDDING_MODEL=text-embedding-3-small `
-  EMBEDDING_WORKER_SECRET=YOUR_RANDOM_SECRET
-supabase functions deploy embedding-worker --no-verify-jwt
-supabase functions deploy hybrid-search
-```
-
-In the SQL editor, store the scheduler values in Vault. Substitute the project
-reference and use the same random secret passed above:
-
-```sql
-select vault.create_secret(
-  'https://YOUR_PROJECT_REF.supabase.co/functions/v1/embedding-worker',
-  'prosight_embedding_worker_url'
-);
-select vault.create_secret(
-  'YOUR_RANDOM_SECRET',
-  'prosight_embedding_worker_secret'
-);
-```
-
-The versioned cron migration invokes the private worker once per minute. The
-queue RPCs are executable only by `service_role`, and the worker refuses to run
-when its request secret is absent or incorrect.
+No Edge Function, Vault secret, cron schedule, or separate worker is required.
+The latest migration disables the old queue triggers and schedule. FastAPI uses
+its server-only OpenAI key to embed documents in its two-thread ingestion pool
+and uses the caller JWT for hybrid retrieval.
 
 ## 4. Dry run and migration
 

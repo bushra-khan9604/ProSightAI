@@ -11,7 +11,7 @@ import {
 } from "recharts";
 import {
   askAgent, askAgentStream, clearFailedIngestionJob, confirmDocumentDate, createProjectImportPreview, createProjectPreview,
-  decideChange, deleteDocument, getChangeRequest, getDocuments, getIngestionJob,
+  decideChange, deleteDocument, getChangeRequest, getDocuments,
   getApprovals, getInvoicePivot, getNotifications, getPortfolioInvoices, getProjectSchedule,
   getPortfolioManpower, getProjectIngestionJobs, getProjects, markAllNotificationsRead,
   downloadPortfolioTemplate, markNotificationRead, portfolioTemplateUrl, updateProject, updateProjectImport,
@@ -576,19 +576,20 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
   }
   useEffect(()=>{if(open&&formMode==="update")refresh()},[open,selectedProject,role,formMode,dataRevision]);
   useEffect(()=>{
-    if(!Array.isArray(jobs)||!jobs.some(j=>["queued","processing"].includes(j.status)))return;
+    if(!Array.isArray(jobs)||!jobs.some(j=>["queued","processing","embedding"].includes(j.status)))return;
     let cancelled=false;
     const timer=setTimeout(async()=>{
-      const updates=await Promise.all(jobs.map(async job=>{
-        if(!["queued","processing"].includes(job.status))return job;
-        try{return await getIngestionJob(job.id,roleKey)}catch{return job}
-      }));
-      if(cancelled)return;
-      const updatesById=new Map(updates.map(job=>[job.id,job]));
-      setJobs(current=>current.map(job=>updatesById.get(job.id)||job));
+      try{
+        const [documentItems,jobItems]=await Promise.all([
+          getDocuments(selectedProject,roleKey),
+          getProjectIngestionJobs(selectedProject,roleKey),
+        ]);
+        if(cancelled)return;
+        setDocuments(documentItems);setJobs(jobItems);
+      }catch{/* Keep the current progress visible through transient polling errors. */}
     },1200);
     return()=>{cancelled=true;clearTimeout(timer)};
-  },[jobs]);
+  },[jobs,selectedProject,roleKey]);
   useEffect(()=>{
     if(jobs.some(j=>["ready","awaiting_approval","awaiting_date_confirmation"].includes(j.status))) {
       getDocuments(selectedProject,roleKey).then(setDocuments).catch(()=>setDocuments([]));
@@ -629,8 +630,7 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
   async function review(job,decision){
     try{
       await decideChange(job.change_request_id,decision,roleKey);
-      setJobs(items=>items.map(x=>x.id===job.id?{...x,status:decision==="approve"?"ready":"rejected",message:`Change ${decision}d`}:x));
-      refresh();
+      await refresh();
     }catch(e){setError(e.message)}
   }
   async function showPreview(job){

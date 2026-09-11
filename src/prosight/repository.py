@@ -390,6 +390,22 @@ class ProjectRepository:
             with db:
                 db.execute("UPDATE documents SET status = ? WHERE id = ?", (status, document_id))
 
+    def complete_document_ingestion(
+        self, document_id: str, job_id: str, chunk_count: int
+    ) -> None:
+        """Publish a fully embedded document and remove its completed job atomically."""
+        with closing(self.connect()) as db:
+            with db:
+                db.execute(
+                    "UPDATE documents SET status='ready' WHERE id=?", (document_id,)
+                )
+                result = db.execute(
+                    "DELETE FROM ingestion_jobs WHERE id=? AND document_id=?",
+                    (job_id, document_id),
+                )
+                if result.rowcount != 1:
+                    raise ValueError("Ingestion job does not match document")
+
     def update_document_date(
         self,
         document_id: str,
@@ -491,11 +507,27 @@ class ProjectRepository:
                     (status, max(0, min(100, progress)), message, change_request_id, self._now(), job_id),
                 )
 
+    def claim_job(self, job_id: str) -> bool:
+        """Atomically allow only one in-process task to start a queued job."""
+        with closing(self.connect()) as db:
+            with db:
+                result = db.execute(
+                    """UPDATE ingestion_jobs SET status='processing', progress=5,
+                       message='Claimed for processing', updated_at=?
+                       WHERE id=? AND status='queued'""",
+                    (self._now(), job_id),
+                )
+        return result.rowcount == 1
+
     def recover_interrupted_jobs(self) -> None:
         """Mark jobs interrupted by a process restart as failed and recoverable."""
         self.ensure_schema()
         with closing(self.connect()) as db:
             with db:
+                db.execute(
+                    """DELETE FROM ingestion_jobs WHERE status='ready' AND document_id IN
+                       (SELECT id FROM documents WHERE status='ready')"""
+                )
                 db.execute(
                     """UPDATE ingestion_jobs SET status='failed', message='Server restarted during ingestion',
                        updated_at=? WHERE status IN ('queued','processing')""",
@@ -524,6 +556,25 @@ class ProjectRepository:
                     f"{requested_by.replace('_', ' ').title()} submitted a {action.replace('_', ' ')} request.",
                 )
         return self.get_change_request(change_id)
+
+    def create_pdf_approval(
+        self, job_id: str, document: dict[str, Any], requested_by: str
+    ) -> dict[str, Any]:
+        """Create the mandatory approval record for a validated PDF."""
+        return self.create_change_request(
+            "pdf_ingestion", document["project_code"],
+            {"job_id": job_id, "document_id": document["id"]},
+            {
+                "before": None,
+                "after": {
+                    "filename": document["filename"],
+                    "reporting_date": document.get("reporting_date"),
+                    "effective_date": document.get("effective_date"),
+                    "date_status": document.get("date_status"),
+                },
+            },
+            requested_by,
+        )
 
     def _insert_notification(
         self, db: sqlite3.Connection, recipient_role: str, event_type: str,
@@ -1079,17 +1130,27 @@ class ProjectRepository:
                 )
                 if decision == "approved":
                     self._apply_change(db, change)
-                terminal = "ready" if decision == "approved" else "rejected"
-                db.execute(
-                    """UPDATE ingestion_jobs SET status=?, message=?, updated_at=?
-                       WHERE change_request_id=?""",
-                    (terminal, f"Change {decision}", self._now(), change_id),
+                terminal = (
+                    "processing"
+                    if decision == "approved" and change["action"] == "pdf_ingestion"
+                    else "ready" if decision == "approved" else "rejected"
                 )
                 db.execute(
                     """UPDATE documents SET status=? WHERE id IN
                        (SELECT document_id FROM ingestion_jobs WHERE change_request_id=?)""",
                     (terminal, change_id),
                 )
+                if terminal == "ready":
+                    db.execute(
+                        "DELETE FROM ingestion_jobs WHERE change_request_id=?",
+                        (change_id,),
+                    )
+                else:
+                    db.execute(
+                        """UPDATE ingestion_jobs SET status=?, message=?, updated_at=?
+                           WHERE change_request_id=?""",
+                        (terminal, f"Change {decision}", self._now(), change_id),
+                    )
                 db.execute(
                     "INSERT INTO audit_events VALUES (?,?,?,?,?,?,?,?,?)",
                     (
@@ -1139,6 +1200,8 @@ class ProjectRepository:
                         :revised_progress,:actual_progress,:payload)""",
                         values,
                     )
+        elif action == "pdf_ingestion":
+            return
         elif action == "record_delete":
             db.execute("DELETE FROM projects WHERE code = ?", (code,))
         elif action in {

@@ -8,12 +8,8 @@ flowchart LR
   A -->|"caller JWT / RLS"| P[("Supabase PostgreSQL")]
   A -->|"private object keys"| S[("Supabase Storage")]
   A --> O["OpenAI agent orchestration"]
-  A -->|"query + caller JWT"| H["Hybrid-search Edge Function"]
-  H -->|"text-embedding-3-small"| E["OpenAI Embeddings"]
-  H -->|"security-invoker RPC"| P
-  P -->|"pgmq + cron"| W["Private embedding worker"]
-  W --> E
-  W --> P
+  A -->|"document + query batches"| E["OpenAI Embeddings"]
+  A -->|"caller JWT + security-invoker RPC"| P
 ```
 
 FastAPI verifies each access token against the Supabase project JWKS, loads the
@@ -51,17 +47,19 @@ chunk numbers, content hash, effective date, metadata, token count, embedding
 model/version/status, generated full-text vector, and `halfvec(1536)`.
 
 PDF extraction never crosses page boundaries. Long pages are split into
-overlapping token-aware sections, retaining page citation metadata. Inserts or
-content/model changes clear the old embedding and enqueue a `pgmq` message.
-The scheduled worker batches jobs, uses `text-embedding-3-small` with an
-explicit 1536 dimensions, and applies bounded exponential retries. Parent
-document and ingestion-job status is derived from its chunk statuses.
+overlapping token-aware sections after repeated headers and footers are removed.
+Every PDF upload passes through an explicit Admin approval gate after validation
+and reporting-date resolution, regardless of the uploader's role.
+The bounded FastAPI executor restores source files from private Storage, batches
+up to 64 inputs with `text-embedding-3-small`, uses explicit 1536 dimensions,
+and applies bounded exponential retries. Content hashes let a restarted job skip
+completed chunks, and the parent document/job is published atomically.
 
 `hybrid_search` independently ranks full-text and cosine candidates, combines
 them with reciprocal-rank fusion, adds a small effective-date preference, and
 filters by ready document state, project code, and RLS membership before
-returning evidence. Query embeddings are created by an authenticated Edge
-Function so indexing and retrieval share the same model configuration.
+returning evidence. FastAPI creates query embeddings with the same model and
+calls the RPC with the caller JWT, preserving project-scoped RLS.
 
 ## Migration and cutover
 

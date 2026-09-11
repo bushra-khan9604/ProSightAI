@@ -12,7 +12,7 @@ traceable OpenAI agents.
 - PostgreSQL with RLS, user profiles, project memberships, audits, notifications, and approval ownership.
 - Private Supabase Storage buckets for project documents and portfolio imports.
 - Page-aware PDF chunks, GIN full-text search, HNSW `halfvec(1536)`, and reciprocal-rank hybrid search.
-- `pgmq` embedding jobs processed by a scheduled Edge Function using `text-embedding-3-small`.
+- In-process batched `text-embedding-3-small` ingestion with durable restart recovery.
 - Idempotent legacy SQLite/file migration with dry-run, row-count, and file-checksum verification.
 
 The original FastAPI agent contracts and the established React visual flow are
@@ -49,9 +49,6 @@ The complete hosted rollout and rollback checklist is in
 ```powershell
 supabase link --project-ref YOUR_PROJECT_REF
 supabase db push
-supabase secrets set OPENAI_API_KEY=... EMBEDDING_WORKER_SECRET=...
-supabase functions deploy embedding-worker --no-verify-jwt
-supabase functions deploy hybrid-search
 python -m prosight.cli migrate-supabase --sqlite data\prosight.db --dry-run
 python -m prosight.cli migrate-supabase --sqlite data\prosight.db
 ```
@@ -67,11 +64,13 @@ have reached `ready`.
 ## Ingestion and retrieval
 
 PDFs remain within page boundaries and long pages are token-aware chunked with
-overlap. Chunk inserts enqueue embedding work. The private worker batches
-OpenAI embedding requests, records attempts/errors, retries transient failures,
-and advances the parent document/job to `ready` only when all chunks succeed.
-Queries use an authenticated Edge Function to create the query embedding and
-invoke the security-invoker hybrid-search RPC under the caller's JWT.
+overlap. The bounded FastAPI background executor downloads private source files,
+removes repeated headers/footers, batches OpenAI embedding requests, retries
+transient failures, and atomically advances the document/job to `ready`. Every
+PDF requires explicit Admin approval after validation and date confirmation;
+embedding never starts before approval, including for Admin-uploaded PDFs.
+FastAPI creates query embeddings and invokes the security-invoker hybrid-search
+RPC with the caller's JWT so RLS remains active.
 
 Workbook imports continue to create previews and require approval before
 governed data changes. Employees are read-only and receive masked contact
@@ -99,18 +98,17 @@ $env:PROSIGHT_AI_PROVIDER="local"
 pnpm --dir frontend run build
 ```
 
-The unit suite runs without OpenAI calls. Supabase RLS/Auth/Storage and Edge
-Function integration tests should run against an isolated local or test
-project before pushing the migrations to production.
+The unit suite runs without OpenAI calls. Supabase RLS/Auth/Storage and pgvector
+integration tests should run against an isolated local or test project before
+pushing the migrations to production.
 
 ## Repository map
 
-- `supabase/migrations/` — PostgreSQL schema, RLS, Storage policies, queue, search, and cron.
-- `supabase/functions/` — authenticated hybrid search and private embedding worker.
+- `supabase/migrations/` — PostgreSQL schema, RLS, Storage policies, and hybrid search.
 - `src/prosight/auth.py` — JWKS token verification and request-scoped identity.
 - `src/prosight/supabase_repository.py` — RLS-aware production repository.
 - `src/prosight/migration.py` — legacy SQLite and file migration.
-- `src/prosight/rag/` — page-aware pgvector retrieval adapter.
+- `src/prosight/rag/` — application embeddings and page-aware pgvector retrieval.
 - `frontend/src/AuthApp.jsx` — landing, Auth flows, and protected routing.
 - `docs/architecture.md` — implemented architecture and trust boundaries.
 - `docs/supabase-rollout.md` — deployment, verification, and rollback runbook.

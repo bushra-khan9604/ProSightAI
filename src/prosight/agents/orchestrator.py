@@ -44,14 +44,17 @@ class MultiAgentOrchestrator:
             "project", "progress", "contact", "manpower", "equipment", "milestone",
             "contract", "schedule", "database", "invoice", "payment", "remittance",
             "aging", "risk profile", "workforce", "employee", "allocation",
+            "manager", "engineer", "planned", "actual", "finish date", "start date",
         )
         if normalized.strip() in {"hi", "hello", "hey"}:
             intent, agents = "greeting", ["writer"]
         elif any(term in normalized for term in write_terms):
             intent, agents = "database_write", ["database_manager", "writer"]
         else:
-            wants_rag = any(term in normalized for term in rag_terms)
             wants_db = any(term in normalized for term in database_terms)
+            wants_rag = any(term in normalized for term in rag_terms) or (
+                bool(project_code) and not wants_db
+            )
             if wants_rag and wants_db:
                 intent, agents = "combined", ["database_manager", "rag", "writer"]
             elif wants_rag:
