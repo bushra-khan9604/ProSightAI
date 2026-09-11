@@ -8,6 +8,11 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from .auth import current_auth
+from .portfolio_contract import (
+    INVOICE_DB_COLUMNS,
+    MANPOWER_DB_COLUMNS,
+    with_invoice_legacy_aliases,
+)
 from .repository import ProjectRepository
 from .supabase_gateway import SupabaseError, SupabaseGateway
 
@@ -519,24 +524,59 @@ class SupabaseProjectRepository:
 
     def apply_portfolio_import(self, import_id: str, parsed: dict[str, Any]) -> dict[str, Any]:
         counts: dict[str, dict[str, int]] = {}
-        for key, table, conflict in (
-            ("manpower", "manpower_assignments", "emp_code"),
-            ("invoices", "project_invoices", "job_number,draft_invoice_number"),
-            ("schedule", "project_schedule_activities", "project_code,activity_id"),
+        now = self._now()
+        for key, table, conflict, columns, key_columns in (
+            (
+                "manpower", "manpower_assignments", "emp_code",
+                MANPOWER_DB_COLUMNS, ("emp_code",),
+            ),
+            (
+                "invoices", "project_invoices", "job_number,draft_invoice_number",
+                INVOICE_DB_COLUMNS, ("job_number", "draft_invoice_number"),
+            ),
+            (
+                "schedule", "project_schedule_activities", "project_code,activity_id",
+                ("project_code", "activity_id", "activity_name", "start_date",
+                 "finish_date", "original_duration"),
+                ("project_code", "activity_id"),
+            ),
         ):
             items = parsed.get(key, [])
+            existing_select = list(key_columns)
+            if key == "invoices":
+                existing_select.append("project_code")
+            existing_rows = self.service.select_all(
+                table, select=",".join(dict.fromkeys(existing_select))
+            )
+            existing = {
+                tuple(str(row.get(column) or "") for column in key_columns): row
+                for row in existing_rows
+            }
             rows = []
             for item in items:
-                row = dict(item)
-                if key == "manpower": row.update(data_json=item, import_id=import_id)
-                elif key == "invoices": row.update(data_json=item, import_id=import_id)
-                else:
-                    row.update(start_date=row.pop("start"), finish_date=row.pop("finish"), import_id=import_id)
+                source = dict(item)
+                if key == "schedule":
+                    source.update(start_date=source.pop("start"), finish_date=source.pop("finish"))
+                row = {column: source.get(column) for column in columns}
+                stable_key = tuple(str(row.get(column) or "") for column in key_columns)
+                if key == "invoices" and stable_key in existing:
+                    previous_project = existing[stable_key].get("project_code")
+                    if previous_project and previous_project != row.get("project_code"):
+                        raise ValueError("An existing invoice cannot be reassigned to another project")
+                if key in {"manpower", "invoices"}:
+                    row["data_json"] = item
+                row.update(import_id=import_id, updated_at=now)
+                if key == "schedule":
+                    row.pop("data_json", None)
                 rows.append(row)
             if rows:
                 path = f"/rest/v1/{table}?on_conflict={conflict}"
                 self.service.request("POST", path, rows, prefer="return=representation,resolution=merge-duplicates")
-            counts[key] = {"inserted": len(rows), "updated": 0}
+            updated = sum(
+                tuple(str(row.get(column) or "") for column in key_columns) in existing
+                for row in rows
+            )
+            counts[key] = {"inserted": len(rows) - updated, "updated": updated}
         summary = {**counts, "pivot_row_count": len(self.invoice_pivot())}
         self.service.update("portfolio_imports", {"status": "completed", "summary_json": summary,
                             "completed_at": self._now()}, id=f"eq.{import_id}")
@@ -552,7 +592,12 @@ class SupabaseProjectRepository:
                              ("category", category), ("status", status), ("current_location", location)):
             if value: filters[field] = f"eq.{value}"
         if search: filters["or"] = f"(name.ilike.*{search}*,emp_code.ilike.*{search}*)"
-        return [dict(row["data_json"]) for row in self.db.select("manpower_assignments", select="data_json", **filters)]
+        results = []
+        for source in self.db.select_all("manpower_assignments", **filters):
+            item = dict(self._decode_json(source.get("data_json")) or {})
+            item.update({column: source.get(column) for column in MANPOWER_DB_COLUMNS})
+            results.append(item)
+        return results
 
     def list_invoices(self, project_code: str | None = None, status: str | None = None,
                       level: str | None = None, approval_status: str | None = None,
@@ -567,8 +612,10 @@ class SupabaseProjectRepository:
         if date_from: filters["submission_date"] = f"gte.{date_from}"
         if date_to: filters["submission_date"] = f"lte.{date_to}"
         results = []
-        for row in self.db.select("project_invoices", select="data_json", **filters):
-            item = dict(row["data_json"])
+        for row in self.db.select_all("project_invoices", **filters):
+            item = dict(self._decode_json(row.get("data_json")) or {})
+            item.update({column: row.get(column) for column in INVOICE_DB_COLUMNS})
+            item = with_invoice_legacy_aliases(item)
             item["live_aging_days"] = ProjectRepository._days_since(item.get("submission_date"), date.today())
             item["live_days_to_remittance"] = ProjectRepository._days_until(item.get("expected_remittance_date"), date.today())
             if minimum_aging_days is None or (item["live_aging_days"] is not None and item["live_aging_days"] >= minimum_aging_days):

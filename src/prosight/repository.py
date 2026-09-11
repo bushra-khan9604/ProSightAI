@@ -10,6 +10,8 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from .portfolio_contract import INVOICE_DB_COLUMNS, MANPOWER_DB_COLUMNS, with_invoice_legacy_aliases
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA = ROOT / "data" / "projects.json"
@@ -128,16 +130,20 @@ class ProjectRepository:
                     );
                     CREATE TABLE IF NOT EXISTS manpower_assignments (
                         emp_code TEXT PRIMARY KEY,
+                        serial_number INTEGER,
                         current_project_code TEXT NOT NULL,
                         mobilized_project_code TEXT,
                         name TEXT NOT NULL,
                         designation TEXT,
                         department TEXT,
+                        mobilized_project TEXT,
+                        current_project TEXT,
                         category TEXT,
                         current_location TEXT,
                         allocation TEXT,
                         status TEXT,
                         leave_balance REAL,
+                        remarks TEXT,
                         data_json TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         import_id TEXT NOT NULL
@@ -155,6 +161,39 @@ class ProjectRepository:
                         invoice_value_aed REAL,
                         submission_date TEXT,
                         expected_remittance_date TEXT,
+                        serial_number INTEGER,
+                        proforma_date TEXT,
+                        sap_po_number TEXT,
+                        po_line_number TEXT,
+                        contract_number TEXT,
+                        coo_number TEXT,
+                        icv_percent REAL,
+                        icv_five_percent_usd REAL,
+                        invoice_value_excl_tax_icv_usd REAL,
+                        invoice_value_excl_tax_icv_aed REAL,
+                        tax_invoice_reference TEXT,
+                        ps_job_officer TEXT,
+                        client_job_officer TEXT,
+                        work_description TEXT,
+                        avl_status TEXT,
+                        work_year INTEGER,
+                        asset TEXT,
+                        icv_claim_year TEXT,
+                        last_discussion_month TEXT,
+                        mm_yy TEXT,
+                        approval_current_date TEXT,
+                        days_pending_approval INTEGER,
+                        reason_for_rejection TEXT,
+                        aging_reference TEXT,
+                        client_reference TEXT,
+                        payment_terms_days INTEGER,
+                        days_pending_remittance INTEGER,
+                        payment_current_date TEXT,
+                        outstanding_status TEXT,
+                        project TEXT,
+                        tax_invoice_taken_outstanding TEXT,
+                        aging_of_approval TEXT,
+                        remarks TEXT,
                         data_json TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         import_id TEXT NOT NULL,
@@ -189,6 +228,33 @@ class ProjectRepository:
                 self._ensure_column(db, "documents", "date_status", "TEXT NOT NULL DEFAULT 'pending'")
                 self._ensure_column(db, "portfolio_imports", "dataset", "TEXT")
                 self._ensure_column(db, "portfolio_imports", "project_code", "TEXT")
+                for column, declaration in (
+                    ("serial_number", "INTEGER"), ("mobilized_project", "TEXT"),
+                    ("current_project", "TEXT"), ("remarks", "TEXT"),
+                ):
+                    self._ensure_column(db, "manpower_assignments", column, declaration)
+                for column, declaration in (
+                    ("serial_number", "INTEGER"), ("proforma_date", "TEXT"),
+                    ("sap_po_number", "TEXT"), ("po_line_number", "TEXT"),
+                    ("contract_number", "TEXT"), ("coo_number", "TEXT"),
+                    ("icv_percent", "REAL"), ("icv_five_percent_usd", "REAL"),
+                    ("invoice_value_excl_tax_icv_usd", "REAL"),
+                    ("invoice_value_excl_tax_icv_aed", "REAL"),
+                    ("tax_invoice_reference", "TEXT"), ("ps_job_officer", "TEXT"),
+                    ("client_job_officer", "TEXT"), ("work_description", "TEXT"),
+                    ("avl_status", "TEXT"), ("work_year", "INTEGER"),
+                    ("asset", "TEXT"), ("icv_claim_year", "TEXT"),
+                    ("last_discussion_month", "TEXT"), ("mm_yy", "TEXT"),
+                    ("approval_current_date", "TEXT"),
+                    ("days_pending_approval", "INTEGER"),
+                    ("reason_for_rejection", "TEXT"), ("aging_reference", "TEXT"),
+                    ("client_reference", "TEXT"), ("payment_terms_days", "INTEGER"),
+                    ("days_pending_remittance", "INTEGER"),
+                    ("payment_current_date", "TEXT"), ("outstanding_status", "TEXT"),
+                    ("project", "TEXT"), ("tax_invoice_taken_outstanding", "TEXT"),
+                    ("aging_of_approval", "TEXT"), ("remarks", "TEXT"),
+                ):
+                    self._ensure_column(db, "project_invoices", column, declaration)
                 # Existing pending requests predate notifications but must still
                 # appear as unread Admin work after this additive migration.
                 pending = db.execute(
@@ -743,28 +809,21 @@ class ProjectRepository:
                         updated_manpower += 1
                     else:
                         inserted_manpower += 1
+                    manpower_columns = [
+                        *MANPOWER_DB_COLUMNS, "data_json", "updated_at", "import_id",
+                    ]
+                    manpower_updates = ",".join(
+                        f"{column}=excluded.{column}"
+                        for column in manpower_columns if column != "emp_code"
+                    )
                     db.execute(
-                        """INSERT INTO manpower_assignments
-                           (emp_code,current_project_code,mobilized_project_code,name,
-                            designation,department,category,current_location,allocation,
-                            status,leave_balance,data_json,updated_at,import_id)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                           ON CONFLICT(emp_code) DO UPDATE SET
-                            current_project_code=excluded.current_project_code,
-                            mobilized_project_code=excluded.mobilized_project_code,
-                            name=excluded.name,designation=excluded.designation,
-                            department=excluded.department,category=excluded.category,
-                            current_location=excluded.current_location,
-                            allocation=excluded.allocation,status=excluded.status,
-                            leave_balance=excluded.leave_balance,data_json=excluded.data_json,
-                            updated_at=excluded.updated_at,import_id=excluded.import_id""",
-                        (
-                            item["emp_code"], item["current_project_code"],
-                            item["mobilized_project_code"], item["name"], item["designation"],
-                            item["department"], item["category"], item["current_location"],
-                            item["allocation"], item["status"], item["leave_balance"],
+                        f"INSERT INTO manpower_assignments ({','.join(manpower_columns)}) "
+                        f"VALUES ({','.join('?' for _ in manpower_columns)}) "
+                        f"ON CONFLICT(emp_code) DO UPDATE SET {manpower_updates}",
+                        [
+                            *(item.get(column) for column in MANPOWER_DB_COLUMNS),
                             json.dumps(item), now, import_id,
-                        ),
+                        ],
                     )
                     self._insert_audit(
                         db, record["uploaded_by"], "portfolio_manpower_upsert",
@@ -783,33 +842,26 @@ class ProjectRepository:
                         updated_invoices += 1
                     else:
                         inserted_invoices += 1
+                    invoice_columns = [
+                        *INVOICE_DB_COLUMNS, "data_json", "updated_at", "import_id",
+                    ]
+                    immutable_invoice_columns = {
+                        "job_number", "draft_invoice_number", "project_code",
+                    }
+                    invoice_updates = ",".join(
+                        f"{column}=excluded.{column}"
+                        for column in invoice_columns
+                        if column not in immutable_invoice_columns
+                    )
                     db.execute(
-                        """INSERT INTO project_invoices
-                           (job_number,draft_invoice_number,project_code,levels,status,
-                            approval_status,payment_status,risk_profile,invoice_value_usd,
-                            invoice_value_aed,submission_date,expected_remittance_date,
-                            data_json,updated_at,import_id)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                           ON CONFLICT(job_number,draft_invoice_number) DO UPDATE SET
-                            levels=excluded.levels,status=excluded.status,
-                            approval_status=excluded.approval_status,
-                            payment_status=excluded.payment_status,
-                            risk_profile=excluded.risk_profile,
-                            invoice_value_usd=excluded.invoice_value_usd,
-                            invoice_value_aed=excluded.invoice_value_aed,
-                            submission_date=excluded.submission_date,
-                            expected_remittance_date=excluded.expected_remittance_date,
-                            data_json=excluded.data_json,updated_at=excluded.updated_at,
-                            import_id=excluded.import_id""",
-                        (
-                            item["job_number"], item["draft_invoice_number"],
-                            item["project_code"], item.get("levels"), item.get("status"),
-                            item.get("approval_status"), item.get("payment_status"),
-                            item.get("risk_profile"), item["invoice_value_usd"],
-                            item.get("invoice_value_aed"), item.get("submission_date"),
-                            item.get("expected_remittance_date"), json.dumps(item),
-                            now, import_id,
-                        ),
+                        f"INSERT INTO project_invoices ({','.join(invoice_columns)}) "
+                        f"VALUES ({','.join('?' for _ in invoice_columns)}) "
+                        "ON CONFLICT(job_number,draft_invoice_number) DO UPDATE SET "
+                        f"{invoice_updates}",
+                        [
+                            *(item.get(column) for column in INVOICE_DB_COLUMNS),
+                            json.dumps(item), now, import_id,
+                        ],
                     )
                     target = f"{item['job_number']}:{item['draft_invoice_number']}"
                     self._insert_audit(
@@ -928,7 +980,7 @@ class ProjectRepository:
     ) -> list[dict[str, Any]]:
         """Query current manpower assignments by project and optional text."""
         self._ensure()
-        query, params = "SELECT data_json FROM manpower_assignments WHERE 1=1", []
+        query, params = "SELECT * FROM manpower_assignments WHERE 1=1", []
         if project_code:
             query += " AND current_project_code=?"
             params.append(project_code)
@@ -945,7 +997,16 @@ class ProjectRepository:
         query += " ORDER BY name"
         with closing(self.connect()) as db:
             rows = db.execute(query, params).fetchall()
-        return [json.loads(row["data_json"]) for row in rows]
+        results = []
+        for row in rows:
+            item = json.loads(row["data_json"])
+            item.update({
+                column: row[column]
+                for column in MANPOWER_DB_COLUMNS
+                if row[column] is not None
+            })
+            results.append(item)
+        return results
 
     def list_invoices(
         self, project_code: str | None = None, status: str | None = None,
@@ -956,7 +1017,7 @@ class ProjectRepository:
     ) -> list[dict[str, Any]]:
         """Query invoice rows and add live aging values where dates permit."""
         self._ensure()
-        query, params = "SELECT data_json FROM project_invoices WHERE 1=1", []
+        query, params = "SELECT * FROM project_invoices WHERE 1=1", []
         if project_code:
             query += " AND project_code=?"
             params.append(project_code)
@@ -981,6 +1042,12 @@ class ProjectRepository:
         today, results = date.today(), []
         for row in rows:
             item = json.loads(row["data_json"])
+            item.update({
+                column: row[column]
+                for column in INVOICE_DB_COLUMNS
+                if row[column] is not None
+            })
+            item = with_invoice_legacy_aliases(item)
             item["live_aging_days"] = self._days_since(item.get("submission_date"), today)
             item["live_days_to_remittance"] = self._days_until(
                 item.get("expected_remittance_date"), today

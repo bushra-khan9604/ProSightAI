@@ -81,6 +81,15 @@ export async function downloadPortfolioTemplate(_role, dataset="combined") {
 export const portfolioTemplateUrl = () => "#";
 export async function getProjectSchedule(_role, projectCode) { return json(await apiFetch(`/api/projects/${encodeURIComponent(projectCode)}/schedule`),"Could not load project schedule"); }
 export async function getPortfolioManpower(_role, projectCode="") { const q=new URLSearchParams();if(projectCode)q.set("project_code",projectCode);return json(await apiFetch(`/api/portfolio/manpower?${q}`),"Could not load portfolio manpower"); }
+export async function exportPortfolioManpower(employeeCodes,scenarioChanges=[]) {
+  const response=await apiFetch("/api/portfolio/manpower/export",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({employee_codes:employeeCodes,scenario_changes:scenarioChanges}),
+  });
+  if(!response.ok){const payload=await response.json().catch(()=>({}));throw new Error(payload.detail||"Could not export manpower")}
+  const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");
+  link.href=url;link.download="ProSight-Manpower-Scenario.xlsx";link.click();URL.revokeObjectURL(url);
+}
 export async function getPortfolioInvoices(_role, projectCode="") { const q=new URLSearchParams();if(projectCode)q.set("project_code",projectCode);return json(await apiFetch(`/api/portfolio/invoices?${q}`),"Could not load project invoices"); }
 export async function getInvoicePivot() { return json(await apiFetch("/api/portfolio/invoice-pivot"),"Could not load invoice pivot"); }
 export async function getDocuments(projectCode) { return json(await apiFetch(`/api/projects/${encodeURIComponent(projectCode)}/documents`),"Could not load project documents"); }

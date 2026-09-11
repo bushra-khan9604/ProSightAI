@@ -11,12 +11,15 @@ import tempfile
 import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import date
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse, StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .agents import MultiAgentOrchestrator
@@ -30,7 +33,7 @@ from .observability import RequestTrace, configure_logging, sanitize
 from .rag import RAGStore
 from .repository import DEFAULT_DB, ProjectRepository
 from .supabase_repository import SupabaseProjectRepository
-from .supabase_gateway import current_access_token
+from .supabase_gateway import SupabaseError, current_access_token
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -123,6 +126,53 @@ class DocumentDateConfirmation(BaseModel):
     """User-confirmed reporting date for a pending PDF ingestion job."""
 
     reporting_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class ManpowerScenarioChange(BaseModel):
+    """One temporary workforce change included in an exported scenario."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    emp_code: str = Field(min_length=1, max_length=100)
+    workforce_state: Literal["allocated", "on_leave", "not_allocated"]
+    target_project_code: str | None = Field(default=None, max_length=30)
+
+    @model_validator(mode="after")
+    def require_allocated_project(self) -> "ManpowerScenarioChange":
+        if self.workforce_state == "allocated" and not self.target_project_code:
+            raise ValueError("Allocated scenario changes require a target project")
+        return self
+
+
+class ManpowerExportRequest(BaseModel):
+    """The visible register and optional in-memory scenario to export."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_codes: list[str] = Field(min_length=1, max_length=5_000)
+    scenario_changes: list[ManpowerScenarioChange] = Field(default_factory=list, max_length=5_000)
+
+
+def _manpower_state(item: dict) -> str:
+    """Normalize the imported free-text workforce fields for analytics/export."""
+    status = str(item.get("status") or "").strip().casefold()
+    allocation = str(item.get("allocation") or "").strip().casefold()
+    location = str(item.get("current_location") or "").strip().casefold()
+    if any(term in status or term in location for term in ("on leave", "leave", "vacation")):
+        return "on_leave"
+    if not item.get("current_project_code") or any(
+        term in status or term in allocation
+        for term in ("not allocated", "unallocated", "available", "bench")
+    ):
+        return "not_allocated"
+    return "allocated"
+
+
+def _excel_safe(value):
+    """Prevent imported text from becoming an executable spreadsheet formula."""
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
 
 
 class Runtime:
@@ -674,13 +724,22 @@ def create_app(repository=None) -> FastAPI:
             PORTFOLIO_DIR.mkdir(parents=True, exist_ok=True)
             destination = PORTFOLIO_DIR / f"{uuid.uuid4()}-{filename}"
             shutil.copy2(temp_path, destination)
-            record = runtime.repository.create_portfolio_import(
-                filename, checksum, str(destination), role, dataset, project_code
-            )
-            store_file = getattr(runtime.repository, "store_portfolio_file", None)
-            if store_file:
-                store_file(record, destination)
             try:
+                record = runtime.repository.create_portfolio_import(
+                    filename, checksum, str(destination), role, dataset, project_code
+                )
+            except SupabaseError as error:
+                safe_detail = sanitize(str(error), 300)
+                raise HTTPException(
+                    status_code=503 if error.status == 503 else 502,
+                    detail={
+                        "message": f"Supabase could not start the portfolio import: {safe_detail}"
+                    },
+                ) from error
+            store_file = getattr(runtime.repository, "store_portfolio_file", None)
+            try:
+                if store_file:
+                    store_file(record, destination)
                 parsed = parse_portfolio_workbook(
                     destination, runtime.repository.resolve_project_reference,
                     dataset, project_code
@@ -691,6 +750,23 @@ def create_app(repository=None) -> FastAPI:
                 raise HTTPException(
                     status_code=400,
                     detail={"message": str(error), "import": failed},
+                ) from error
+            except SupabaseError as error:
+                safe_detail = sanitize(str(error), 300)
+                logging.getLogger("prosight.portfolio").error(
+                    "portfolio_import_supabase_failed",
+                    extra={"event_data": {
+                        "import_id": record["id"], "supabase_status": error.status,
+                        "detail": safe_detail,
+                    }},
+                )
+                message = f"Supabase could not store the portfolio data: {safe_detail}"
+                failed = {}
+                with suppress(SupabaseError):
+                    failed = runtime.repository.fail_portfolio_import(record["id"], message)
+                raise HTTPException(
+                    status_code=503 if error.status == 503 else 502,
+                    detail={"message": message, "import": failed},
                 ) from error
             except Exception as error:
                 logging.getLogger("prosight.portfolio").exception(
@@ -745,6 +821,129 @@ def create_app(repository=None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         return runtime.repository.list_manpower(
             project_code, search, department, category, status, location
+        )
+
+    @app.post("/api/portfolio/manpower/export")
+    def export_portfolio_manpower(
+        export: ManpowerExportRequest,
+        role: str = Depends(caller_role),
+    ) -> StreamingResponse:
+        """Export only RLS-visible employees with a validated temporary scenario."""
+        requested_codes = list(dict.fromkeys(code.strip() for code in export.employee_codes if code.strip()))
+        if not requested_codes:
+            raise HTTPException(status_code=400, detail="At least one employee is required")
+
+        authorized = {
+            str(item.get("emp_code")): dict(item)
+            for item in runtime.repository.list_manpower()
+        }
+        if any(code not in authorized for code in requested_codes):
+            raise HTTPException(status_code=403, detail="The export includes inaccessible manpower records")
+
+        change_by_code: dict[str, ManpowerScenarioChange] = {}
+        project_names: dict[str, str] = {}
+        for change in export.scenario_changes:
+            if change.emp_code not in authorized:
+                raise HTTPException(status_code=403, detail="The scenario includes inaccessible manpower records")
+            if change.emp_code in change_by_code:
+                raise HTTPException(status_code=400, detail="Scenario employee codes must be unique")
+            if change.target_project_code:
+                project = runtime.repository.find_project(change.target_project_code, role)
+                if not project:
+                    raise HTTPException(status_code=403, detail="The scenario includes an inaccessible target project")
+                project_names[change.target_project_code] = project["name"]
+            change_by_code[change.emp_code] = change
+
+        baseline = [authorized[code] for code in requested_codes]
+        scenario: list[dict] = []
+        for source in baseline:
+            item = dict(source)
+            change = change_by_code.get(str(item.get("emp_code")))
+            if change:
+                if change.workforce_state == "allocated":
+                    item.update(
+                        current_project_code=change.target_project_code,
+                        current_project=project_names[change.target_project_code],
+                        allocation="Allocated",
+                    )
+                    if _manpower_state(source) == "on_leave":
+                        item["status"] = "Active"
+                elif change.workforce_state == "on_leave":
+                    item.update(status="On Leave", allocation="On Leave")
+                else:
+                    item.update(
+                        current_project_code=None,
+                        current_project="Not allocated",
+                        status="Available",
+                        allocation="Not Allocated",
+                    )
+            item["workforce_state"] = _manpower_state(item)
+            scenario.append(item)
+
+        workbook = Workbook()
+        register = workbook.active
+        register.title = "Filtered Manpower"
+        columns = [
+            ("EMP Code", "emp_code"), ("Name", "name"),
+            ("Designation", "designation"), ("Department", "department"),
+            ("Category", "category"), ("Current Project", "current_project"),
+            ("Project Code", "current_project_code"),
+            ("Current Location", "current_location"),
+            ("Workforce State", "workforce_state"),
+            ("Allocation", "allocation"), ("Status", "status"),
+            ("Leave Balance", "leave_balance"), ("Remarks", "remarks"),
+        ]
+        register.append([label for label, _ in columns])
+        for item in scenario:
+            register.append([
+                _excel_safe(
+                    str(item.get(field)).replace("_", " ").title()
+                    if field == "workforce_state" else item.get(field)
+                )
+                for _, field in columns
+            ])
+        register.freeze_panes = "A2"
+        register.auto_filter.ref = register.dimensions
+
+        changes_sheet = workbook.create_sheet("Scenario Changes")
+        changes_sheet.append(["EMP Code", "Name", "Baseline Project", "Proposed Project", "Proposed State"])
+        for code in requested_codes:
+            change = change_by_code.get(code)
+            if not change:
+                continue
+            source = authorized[code]
+            changes_sheet.append([
+                _excel_safe(code), _excel_safe(source.get("name")),
+                _excel_safe(source.get("current_project") or source.get("current_project_code")),
+                _excel_safe(project_names.get(change.target_project_code or "") or source.get("current_project")),
+                change.workforce_state.replace("_", " ").title(),
+            ])
+        changes_sheet.freeze_panes = "A2"
+
+        summary = workbook.create_sheet("Scenario Summary")
+        summary.append(["Metric", "Baseline", "Scenario", "Change"])
+        for state, label in (
+            ("total", "Total Employees"), ("allocated", "Allocated"),
+            ("on_leave", "On Leave"), ("not_allocated", "Not Allocated"),
+        ):
+            before = len(baseline) if state == "total" else sum(_manpower_state(item) == state for item in baseline)
+            after = len(scenario) if state == "total" else sum(item["workforce_state"] == state for item in scenario)
+            summary.append([label, before, after, after - before])
+
+        for sheet in workbook.worksheets:
+            for cell in sheet[1]:
+                cell.font = Font(bold=True)
+            for column in sheet.columns:
+                width = min(42, max(12, max(len(str(cell.value or "")) for cell in column) + 2))
+                sheet.column_dimensions[column[0].column_letter].width = width
+
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="ProSight-Manpower-Scenario.xlsx"'},
         )
 
     @app.get("/api/projects/{project_code}/schedule")

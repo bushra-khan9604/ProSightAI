@@ -17,6 +17,7 @@ import {
   downloadPortfolioTemplate, markNotificationRead, portfolioTemplateUrl, updateProject, updateProjectImport,
   uploadPortfolioWorkbook, uploadProjectFile,
 } from "./api";
+import ManpowerDashboard from "./ManpowerDashboard";
 
 const roles = {
   Employee: "employee",
@@ -259,8 +260,9 @@ function Kpi({ icon: Icon, label, value, detail, tone }) {
 }
 
 /** Executive command center assembled from authorized project records. */
-function Dashboard({ projects, goToAssistant }) {
+function Dashboard({ projects, goToAssistant, goToProjects }) {
   const [scheduleRange,setScheduleRange]=useState(6),[rangeOpen,setRangeOpen]=useState(false);
+  const [manpowerOpen,setManpowerOpen]=useState(false);
   const rangeRef=useRef(null);
   useEffect(()=>{
     if(!rangeOpen)return;
@@ -286,6 +288,7 @@ function Dashboard({ projects, goToAssistant }) {
     { month: "Jun", Revised: 67, Actual: 63 }, { month: "Jul", Revised: 72, Actual: 68.5 },
   ];
   const risk = [...delayed].sort((a, b) => a.variance_pct - b.variance_pct)[0];
+  if(manpowerOpen)return <ManpowerDashboard projects={projects} onBack={()=>setManpowerOpen(false)} onOpenImport={goToProjects}/>;
   return <>
     <PageTitle eyebrow="Portfolio overview" title="Project Command Center"
       subtitle="A live view of portfolio health, delivery performance, and emerging risks."/>
@@ -347,6 +350,10 @@ function Dashboard({ projects, goToAssistant }) {
           <div className="timeline-item" key={`${m.name}${i}`}><i/><div><strong>{m.name}</strong><small>{m.project}</small></div><span>{m.status.replace("due ","")}</span></div>)}</div>
       </article>
     </section>
+    <button className="card command-action-card" onClick={()=>setManpowerOpen(true)}>
+      <i><Users size={24}/></i><span><b>Manpower Allocation Dashboard</b><small>Explore workforce distribution, exceptions, and temporary allocation scenarios.</small></span>
+      <em>Open dashboard <ChevronRight size={16}/></em>
+    </button>
   </>;
 }
 
@@ -945,7 +952,7 @@ export default function App({profile,onSignOut}){
     role={role} profile={profile} onSignOut={onSignOut}/><div className="main-shell">
     <main className={loading?"loading":""}>
       {loading?<div className="loader"><i/></div>:<>
-      {page==="dashboard"&&<Dashboard projects={projects} goToAssistant={goToAssistant}/>}
+      {page==="dashboard"&&<Dashboard projects={projects} goToAssistant={goToAssistant} goToProjects={()=>setPage("projects")}/>}
       {page==="projects"&&<ProjectExplorer projects={projects} role={role}
         refreshProjects={refreshProjects} dataRevision={dataRevision}
         selectedProject={explorerProject} setSelectedProject={setExplorerProject}/>}
