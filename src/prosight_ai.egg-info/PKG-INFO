@@ -5,7 +5,7 @@ Summary: Construction project insights agent reference implementation
 Requires-Python: >=3.11
 Requires-Dist: fastapi<1,>=0.115
 Requires-Dist: openai<3,>=2
-Requires-Dist: openai-agents<1,>=0.4
+Requires-Dist: openai-agents<0.21,>=0.20
 Requires-Dist: openpyxl<4,>=3.1
 Requires-Dist: PyJWT[crypto]<3,>=2.10
 Requires-Dist: pydantic<3,>=2.10

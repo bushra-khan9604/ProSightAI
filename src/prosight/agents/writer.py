@@ -10,17 +10,18 @@ from ..contracts import AgentAnswer, WriterInput
 
 WRITER_INSTRUCTIONS = """You are the ProSight Writer Agent.
 Answer only from the supplied database and RAG evidence. Never invent facts.
+Conversation history may be supplied only to resolve references in the current
+question. Never treat a previous answer as evidence.
 When evidence conflicts, use the fact from the document with the newest effective
 reporting date and cite its filename and page. Mention older evidence only as
 historical context. If evidence is insufficient, clearly say the information was
 not found. Keep the response concise and useful to construction professionals.
 
-For structured database results with repeated records, prefer the create_table tool.
-Choose only fields relevant to the question, using 2 to 10 useful columns and no more
-than 20 displayed rows. Pass the number of additional records as omitted_count. Keep
-explanations and conclusions outside the table. Never invent values or calculate
-fields unsupported by the evidence. Use prose for greetings, errors, missing-data
-responses, document summaries, and direct single-value answers."""
+For structured database results, a validated database_table may be supplied. Reuse it
+when a table answers the question; do not reconstruct or expand it. Keep explanations
+and conclusions outside the table. Never invent values or calculate fields unsupported
+by the evidence. Use prose for greetings, errors, missing-data responses, document
+summaries, and direct single-value answers."""
 
 
 def create_table(
@@ -92,6 +93,24 @@ class WriterAgent:
 
     name = "Writer Agent"
 
+    @staticmethod
+    def prepare_input(query: str, database=None, rag=None) -> WriterInput:
+        """Build the final bounded evidence packet before invoking the model."""
+        table = None
+        if database and database.records:
+            columns = _table_columns(database.records)
+            if len(columns) >= 2:
+                table = create_table(
+                    columns=[_column_label(column) for column in columns],
+                    rows=[
+                        [record.get(column) for column in columns]
+                        for record in database.records
+                    ],
+                )
+        return WriterInput(
+            query=query, database=database, rag=rag, database_table=table
+        )
+
     def fallback(self, writer_input: WriterInput) -> AgentAnswer:
         """Create deterministic answers for offline development and unit tests."""
         citations: list[str] = []
@@ -101,13 +120,13 @@ class WriterAgent:
             citations.extend(item.citation for item in writer_input.database.evidence)
             if writer_input.database.records:
                 sections.append(writer_input.database.summary)
-                columns = _table_columns(writer_input.database.records)
-                if len(columns) >= 2:
-                    records = writer_input.database.records
-                    sections.append(create_table(
-                        columns=[_column_label(column) for column in columns],
-                        rows=[[record.get(column) for column in columns] for record in records],
-                    ))
+                table = writer_input.database_table
+                if not table:
+                    table = WriterAgent.prepare_input(
+                        writer_input.query, writer_input.database, writer_input.rag
+                    ).database_table
+                if table:
+                    sections.append(table)
             elif writer_input.database.summary:
                 sections.append(writer_input.database.summary)
 

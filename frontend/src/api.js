@@ -44,9 +44,10 @@ export async function askAgentStream(query, _userRole, projectCode = null, histo
     const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";
     for(const block of blocks){const type=block.match(/^event:\s*(.+)$/m)?.[1],raw=block.match(/^data:\s*(.+)$/m)?.[1];
       if(!type||!raw)continue;const payload=JSON.parse(raw);if(type==="status")handlers.onStatus?.(payload.label||"Thinking");
+      if(type==="delta")handlers.onDelta?.(payload.text||"");
       if(type==="final")finalPayload=payload;if(type==="error")streamError=payload;}
     if(done)break;}
-  if(streamError){const error=new Error(streamError.message||"The assistant could not answer");error.requestId=streamError.request_id;throw error;}
+  if(streamError){const error=new Error(streamError.message||"The assistant could not answer");error.requestId=streamError.request_id;error.partial=Boolean(streamError.partial);throw error;}
   if(!finalPayload)throw new Error("The Assistant stream ended without a final response");return finalPayload;
 }
 

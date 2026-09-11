@@ -64,7 +64,7 @@ class LoggingTests(unittest.TestCase):
                 events = [record["event"] for record in request_records]
                 expected = [
                     "query_received", "query_validated", "orchestration_planned",
-                    "database_query_completed",
+                    "database_query_completed", "evidence_collected",
                     "provider_selected", "response_generated", "response_sent",
                 ]
                 self.assertEqual(expected, events)

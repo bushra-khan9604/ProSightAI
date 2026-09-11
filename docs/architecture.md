@@ -7,7 +7,12 @@ flowchart LR
   U["React landing + protected app"] -->|"Supabase session JWT"| A["FastAPI agent API"]
   A -->|"caller JWT / RLS"| P[("Supabase PostgreSQL")]
   A -->|"private object keys"| S[("Supabase Storage")]
-  A --> O["OpenAI agent orchestration"]
+  A --> O["Deterministic query router"]
+  O --> D["Database Manager"]
+  O --> R["RAG retrieval"]
+  D --> W["OpenAI Writer Agent"]
+  R --> W
+  W -->|"SSE text deltas"| U
   A -->|"document + query batches"| E["OpenAI Embeddings"]
   A -->|"caller JWT + security-invoker RPC"| P
 ```
@@ -18,6 +23,12 @@ RLS-visible profile and memberships, and installs one request-scoped
 use the caller JWT; narrowly scoped ingestion state, approved mutations,
 migration, audit, and embedding work use server credentials after API policy
 checks.
+
+Assistant requests use deterministic routing rather than an additional manager
+model call. For mixed questions, the Database Manager and RAG retrieval execute
+concurrently, then a single Writer Agent receives the typed, bounded evidence
+packet. The Writer is the only model whose text is exposed, and its output is
+streamed to React as SSE deltas before the final citations and timing metadata.
 
 ## Data and access model
 

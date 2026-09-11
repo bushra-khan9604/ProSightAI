@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -108,9 +109,20 @@ class RoleAccessTests(unittest.TestCase):
         body = response.text
         states = [body.index(value) for value in (
             '"state": "thinking"', '"state": "checking_database"',
-            '"state": "creating_response"', "event: final",
+            '"state": "creating_response"', "event: delta", "event: final",
         )]
         self.assertEqual(sorted(states), states)
+        events = []
+        for block in body.split("\n\n"):
+            lines = block.splitlines()
+            event = next((line[7:] for line in lines if line.startswith("event: ")), None)
+            data = next((line[6:] for line in lines if line.startswith("data: ")), None)
+            if event and data:
+                events.append((event, json.loads(data)))
+        streamed = "".join(data["text"] for event, data in events if event == "delta")
+        final = next(data for event, data in events if event == "final")
+        self.assertEqual(final["answer"], streamed)
+        self.assertEqual(0, final["time_to_first_token_ms"])
         self.assertNotIn("Preparing project intelligence", body)
 
     def test_query_accepts_bounded_user_assistant_history(self):

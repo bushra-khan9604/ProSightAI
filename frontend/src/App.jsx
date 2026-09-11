@@ -820,21 +820,34 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
     console.info("prosight.query_submitted",{query_length:text.trim().length,role:roles[role]});
     forceScrollRef.current=true;
     const assistantId=`pending-${Date.now()}-${Math.random()}`;
-    setMessages(current=>[...current,{role:"user",content:text},{role:"assistant",content:"Thinking",pending:true,id:assistantId}]);
+    setMessages(current=>[...current,{role:"user",content:text},{role:"assistant",content:"",status:"Thinking",pending:true,id:assistantId}]);
     setQuery("");setLoading(true);
     const history=messages.filter(message=>["user","assistant"].includes(message.role)&&!message.error&&!message.intro)
       .slice(-10).map(({role:messageRole,content})=>({role:messageRole,content}));
+    let streamedText="",renderTimer=null;
+    const flushStream=()=>{
+      renderTimer=null;
+      setMessages(current=>current.map(message=>message.id===assistantId?{...message,content:streamedText}:message));
+    };
     try{
       const result=await askAgentStream(text,roles[role],selectedProject||null,history,{
-        onStatus:status=>setMessages(current=>current.map(message=>message.id===assistantId?{...message,content:status}:message)),
+        onStatus:status=>setMessages(current=>current.map(message=>message.id===assistantId?{...message,status}:message)),
+        onDelta:delta=>{
+          streamedText+=delta;
+          if(!renderTimer)renderTimer=setTimeout(flushStream,40);
+        },
       });
+      if(renderTimer){clearTimeout(renderTimer);renderTimer=null;}
       console.info("prosight.response_rendered",{request_id:result.request_id,provider:result.mode,duration_ms:result.duration_ms});
       setMessages(current=>current.map(message=>message.id===assistantId?{...message,pending:false,content:result.answer,citations:result.citations,
-        route:result.agent_route,mode:result.mode,notice:result.notice,requestId:result.request_id,durationMs:result.duration_ms}:message));
+        status:null,route:result.agent_route,mode:result.mode,notice:result.notice,requestId:result.request_id,durationMs:result.duration_ms,
+        timeToFirstTokenMs:result.time_to_first_token_ms}:message));
     }catch(error){
+      if(renderTimer){clearTimeout(renderTimer);renderTimer=null;}
       console.error("prosight.client_error",{request_id:error.requestId||null,error_type:error.name});
-      setMessages(current=>current.map(message=>message.id===assistantId?{...message,pending:false,
-        content:`I could not reach the ProSight service. Reference: ${error.requestId||"not available"}.`,error:true}:message));
+      setMessages(current=>current.map(message=>message.id===assistantId?{...message,pending:false,status:null,error:true,
+        content:error.partial&&streamedText?streamedText:`I could not reach the ProSight service. Reference: ${error.requestId||"not available"}.`,
+        notice:error.partial?"This response was interrupted before completion.":null,retryQuery:error.partial?text:null}:message));
     }finally{setLoading(false);}
   }
   const selected=projects.find(project=>project.code===selectedProject);
@@ -875,17 +888,18 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
         {messages.filter(message=>!message.intro).map((message,index)=><div className={`message ${message.role} ${message.error?"error":""} ${message.pending?"pending":""}`} key={message.id||index}>
           <div className="avatar">{message.role==="assistant"?<Sparkles size={18}/>:<Users size={18}/>}</div>
           <div><div className="message-content">{message.role==="assistant"?(message.pending
-            ?<div className="response-state"><span>{message.content}</span><i className="response-state-loader"><em/><em/><em/></i></div>
+            ?<>{message.content&&<AssistantText content={message.content}/>}<div className="response-state"><span>{message.status||"Creating response"}</span><i className="response-state-loader"><em/><em/><em/></i></div></>
             :<AssistantText content={message.content}/>):<p>{message.content}</p>}</div>
             {message.role==="assistant"&&(message.mode||message.route?.length>0||message.requestId||message.notice)&&
               <details className="response-details"><summary>Response details</summary><div className="response-meta">
                 {message.mode&&<div className={`mode-badge ${message.mode}`}>{message.mode==="openai"?"OpenAI reasoning":"Local data mode"}</div>}
                 {message.route?.length>0&&<div className="agent-route">{message.route.map((agent,routeIndex)=><span key={`${agent}-${routeIndex}`}>{agent.replaceAll("_"," ")}</span>)}</div>}
-                {message.requestId&&message.mode&&<div className="request-meta">Request {message.requestId.slice(0,8)} · {message.durationMs} ms</div>}
+                {message.requestId&&message.mode&&<div className="request-meta">Request {message.requestId.slice(0,8)} · {message.durationMs} ms{message.timeToFirstTokenMs!=null?` · first token ${message.timeToFirstTokenMs} ms`:""}</div>}
                 {message.notice&&<div className="mode-notice">{message.notice}</div>}
               </div></details>}
             {message.citations?.length>0&&<details className="source-details"><summary>Sources used <span>{message.citations.length}</span></summary>
               {message.citations.map(citation=><span key={citation}>{citation}</span>)}</details>}
+            {message.retryQuery&&<button className="new-chat-action" onClick={()=>submit(message.retryQuery)}>Retry response</button>}
           </div>
         </div>)}
       </div>

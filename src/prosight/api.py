@@ -9,7 +9,7 @@ import json
 import shutil
 import tempfile
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -383,7 +383,7 @@ def create_app(repository=None) -> FastAPI:
         return runtime.repository.portfolio_summary(role)
 
     @app.post("/api/query")
-    def query(payload: QueryRequest, role: str = Depends(caller_role)) -> dict:
+    async def query(payload: QueryRequest, role: str = Depends(caller_role)) -> dict:
         trace = RequestTrace()
         if payload.project_code:
             require_project_access(payload.project_code)
@@ -401,7 +401,7 @@ def create_app(repository=None) -> FastAPI:
                 query_length=len(payload.query),
                 history_count=len(payload.history),
             )
-            result = runtime.orchestrator.run(
+            result = await runtime.orchestrator.run_async(
                 payload.query.strip(),
                 role,
                 payload.project_code,
@@ -440,7 +440,7 @@ def create_app(repository=None) -> FastAPI:
 
     @app.post("/api/query/stream")
     async def query_stream(
-        payload: QueryRequest, role: str = Depends(caller_role)
+        payload: QueryRequest, request: Request, role: str = Depends(caller_role)
     ) -> StreamingResponse:
         """Stream real orchestration states and a final backward-compatible answer."""
         if payload.project_code:
@@ -456,13 +456,6 @@ def create_app(repository=None) -> FastAPI:
 
         async def generate():
             trace = RequestTrace()
-            loop = asyncio.get_running_loop()
-            statuses: asyncio.Queue[str] = asyncio.Queue()
-            last_state: str | None = None
-
-            def report(state: str) -> None:
-                loop.call_soon_threadsafe(statuses.put_nowait, state)
-
             trace.event("query_received", role=role,
                         project_code=payload.project_code,
                         query_preview=sanitize(payload.query))
@@ -471,40 +464,46 @@ def create_app(repository=None) -> FastAPI:
                         query_length=len(payload.query), history_count=len(payload.history))
             yield encode("meta", {"request_id": trace.request_id})
             yield encode("status", {"state": "thinking", "label": "Thinking"})
+            event_stream = runtime.orchestrator.stream(
+                payload.query.strip(), role, payload.project_code, trace,
+                [message.model_dump() for message in payload.history],
+            )
+            iterator = event_stream.__aiter__()
+            next_event: asyncio.Task | None = None
             try:
-                task = asyncio.create_task(asyncio.to_thread(
-                    runtime.orchestrator.run,
-                    payload.query.strip(), role, payload.project_code, trace,
-                    [message.model_dump() for message in payload.history], report,
-                ))
-                while not task.done():
-                    try:
-                        state = await asyncio.wait_for(statuses.get(), timeout=.1)
-                    except asyncio.TimeoutError:
+                next_event = asyncio.create_task(anext(iterator))
+                while True:
+                    done, _ = await asyncio.wait({next_event}, timeout=15)
+                    if not done:
+                        if await request.is_disconnected():
+                            next_event.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await next_event
+                            return
+                        yield ": keep-alive\n\n"
                         continue
-                    if state != last_state:
-                        last_state = state
-                        yield encode("status", {
-                            "state": state,
-                            "label": labels.get(state, "Thinking"),
-                        })
-                result = await task
-                while not statuses.empty():
-                    state = statuses.get_nowait()
-                    if state != last_state:
-                        last_state = state
-                        yield encode("status", {
-                            "state": state,
-                            "label": labels.get(state, "Thinking"),
-                        })
-                result.update(request_id=trace.request_id, duration_ms=trace.duration_ms)
-                trace.event("response_generated", provider=result["mode"],
-                            agent_route=result.get("agent_route", []),
-                            citation_count=len(result.get("citations", [])),
-                            response_preview=sanitize(result.get("answer", "")))
-                yield encode("final", result)
-                trace.event("response_sent", status=200, provider=result["mode"],
-                            agent_route=result.get("agent_route", []))
+                    try:
+                        event_name, data = next_event.result()
+                    except StopAsyncIteration:
+                        break
+                    if event_name == "status":
+                        data["label"] = labels.get(data.get("state"), data.get("label", "Thinking"))
+                    elif event_name == "final":
+                        data.update(request_id=trace.request_id, duration_ms=trace.duration_ms)
+                        trace.event("response_generated", provider=data["mode"],
+                                    agent_route=data.get("agent_route", []),
+                                    citation_count=len(data.get("citations", [])),
+                                    response_preview=sanitize(data.get("answer", "")),
+                                    time_to_first_token_ms=data.get("time_to_first_token_ms"))
+                    elif event_name == "error":
+                        data["request_id"] = trace.request_id
+                    yield encode(event_name, data)
+                    if event_name == "final":
+                        trace.event("response_sent", status=200, provider=data["mode"],
+                                    agent_route=data.get("agent_route", []))
+                    if event_name == "error":
+                        return
+                    next_event = asyncio.create_task(anext(iterator))
             except Exception as error:
                 logging.getLogger("prosight").exception(
                     "query_stream_failed", extra={"event_data": {
@@ -515,10 +514,19 @@ def create_app(repository=None) -> FastAPI:
                 yield encode("error", {
                     "message": "The Assistant could not complete the request.",
                     "request_id": trace.request_id,
+                    "partial": False,
                 })
+            finally:
+                if next_event and not next_event.done():
+                    next_event.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await next_event
+                await event_stream.aclose()
 
         return StreamingResponse(generate(), media_type="text/event-stream", headers={
-            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
         })
 
     @app.post("/api/uploads", status_code=202)

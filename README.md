@@ -13,6 +13,7 @@ traceable OpenAI agents.
 - Private Supabase Storage buckets for project documents and portfolio imports.
 - Page-aware PDF chunks, GIN full-text search, HNSW `halfvec(1536)`, and reciprocal-rank hybrid search.
 - In-process batched `text-embedding-3-small` ingestion with durable restart recovery.
+- Parallel database/RAG evidence collection with Writer-only SSE token streaming.
 - Idempotent legacy SQLite/file migration with dry-run, row-count, and file-checksum verification.
 
 The original FastAPI agent contracts and the established React visual flow are
@@ -40,6 +41,11 @@ repository-root `.env` and proxies `/api` to port 8000.
 The public health endpoint is available at `/api/health`. All other API calls
 require a valid Supabase access token; the browser client attaches it
 automatically.
+
+Assistant queries are routed deterministically. Database and RAG evidence run
+concurrently for mixed questions, after which a single Writer Agent streams
+`delta` events through `/api/query/stream`; the terminal `final` event retains
+the complete backward-compatible answer, citations, route, and timing metadata.
 
 ## Supabase rollout
 
