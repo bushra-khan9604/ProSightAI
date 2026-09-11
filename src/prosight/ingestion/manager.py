@@ -6,6 +6,7 @@ import hashlib
 import logging
 import shutil
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 
 from ..repository import ProjectRepository
@@ -73,8 +74,17 @@ class IngestionManager:
         except Exception:
             destination.unlink(missing_ok=True)
             raise
+        store_file = getattr(self.repository, "store_document_file", None)
+        if store_file:
+            try:
+                store_file(document, destination)
+            except Exception:
+                self.repository.delete_document_record(document["id"])
+                destination.unlink(missing_ok=True)
+                raise
         job = self.repository.create_job(document["id"])
-        self.executor.submit(self._process, job["id"], document, actor_role)
+        context = copy_context()
+        self.executor.submit(context.run, self._process, job["id"], document, actor_role)
         return {"document": document, "job": job}
 
     def _process(self, job_id: str, document: dict, actor_role: str) -> None:
@@ -102,7 +112,9 @@ class IngestionManager:
                     self.repository.update_document_date(
                         document["id"], None, fallback, "fallback"
                     )
-                    self._index_pdf(job_id, self.repository.get_document(document["id"]))
+                    resolved = self.repository.get_document(document["id"])
+                    resolved["stored_path"] = str(path)
+                    self._index_pdf(job_id, resolved)
             else:
                 preview = preview_workbook(path, document["project_code"])
                 if preview["mapping_required"]:
@@ -139,14 +151,16 @@ class IngestionManager:
         if job["status"] != "awaiting_date_confirmation":
             raise ValueError("This PDF is not awaiting date confirmation")
         document = self.repository.get_document(job["document_id"])
+        document["stored_path"] = str(self._cached_path(document))
         self.repository.update_document_date(
             document["id"], reporting_date, reporting_date, "confirmed"
         )
         self.repository.update_document_status(document["id"], "processing")
         self.repository.update_job(job_id, "processing", 50, "Report date confirmed")
-        self.executor.submit(
-            self._index_pdf, job_id, self.repository.get_document(document["id"])
-        )
+        resolved = self.repository.get_document(document["id"])
+        resolved["stored_path"] = document["stored_path"]
+        context = copy_context()
+        self.executor.submit(context.run, self._index_pdf, job_id, resolved)
         return self.repository.get_job(job_id)
 
     def _index_pdf(self, job_id: str, document: dict) -> None:
@@ -157,10 +171,17 @@ class IngestionManager:
                 job_id, "processing", 55, f"Embedding {len(chunks)} chunks"
             )
             self.rag_store.add_chunks(chunks)
-            self.repository.update_document_status(document["id"], "ready")
-            self.repository.update_job(
-                job_id, "ready", 100, f"Indexed {len(chunks)} chunks"
-            )
+            if self.rag_store.requires_async_embeddings:
+                self.repository.update_document_status(document["id"], "embedding")
+                self.repository.update_job(
+                    job_id, "embedding", 60, f"Queued {len(chunks)} chunks for embedding"
+                )
+            else:
+                self.repository.update_document_status(document["id"], "ready")
+                self.repository.update_job(
+                    job_id, "ready", 100, f"Indexed {len(chunks)} chunks"
+                )
+            Path(document["stored_path"]).unlink(missing_ok=True)
         except Exception as error:
             logger.exception(
                 "pdf_indexing_failed",
@@ -180,7 +201,10 @@ class IngestionManager:
             raise KeyError("Document not found")
         if document["kind"] == "pdf":
             self.rag_store.delete_document(document_id)
-        Path(document["stored_path"]).unlink(missing_ok=True)
+        self._cached_path(document).unlink(missing_ok=True)
+        remove = getattr(self.repository, "delete_document_record_and_storage", None)
+        if remove:
+            return remove(document_id) or {}
         return self.repository.delete_document_record(document_id) or {}
 
     def clear_failed_job(self, job_id: str, actor_role: str) -> dict:
@@ -201,8 +225,17 @@ class IngestionManager:
             raise KeyError("Failed upload metadata not found")
         if document["kind"] == "pdf":
             self.rag_store.delete_document(document["id"])
-        Path(document["stored_path"]).unlink(missing_ok=True)
+        self._cached_path(document).unlink(missing_ok=True)
         return self.repository.delete_failed_ingestion_records(job_id, actor_role)
+
+    def _cached_path(self, document: dict) -> Path:
+        """Resolve the bounded local processing cache for a stored object."""
+        if document.get("stored_path"):
+            return Path(document["stored_path"])
+        return (
+            self.upload_dir / document["project_code"]
+            / f"{document['checksum'][:12]}-{document['filename']}"
+        )
 
     def close(self) -> None:
         """Stop accepting background work and release vector-store resources."""

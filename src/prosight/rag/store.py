@@ -1,122 +1,105 @@
-"""Persistent Chroma-backed vector retrieval with project metadata filters."""
+"""Supabase pgvector retrieval with a deterministic in-memory test adapter."""
 
 from __future__ import annotations
 
-import json
-import urllib.request
-from pathlib import Path
+import math
+from datetime import date
 from typing import Any, Callable
 
 from ..config import get_settings
 from ..contracts import EvidenceItem, RAGEvidence
+from ..supabase_gateway import SupabaseGateway
 
 
 EmbeddingFunction = Callable[[list[str]], list[list[float]]]
 
 
-class OpenAIEmbedder:
-    """Generate low-cost embeddings through the OpenAI Embeddings API."""
-
-    def __init__(self, api_key: str, model: str = "text-embedding-3-small"):
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is required for document indexing")
-        self.api_key, self.model = api_key, model
-
-    def __call__(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch while preserving its original order."""
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/embeddings",
-            data=json.dumps({"model": self.model, "input": texts}).encode(),
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            payload = json.loads(response.read())
-        return [item["embedding"] for item in sorted(payload["data"], key=lambda item: item["index"])]
-
-
 class RAGStore:
-    """Index and retrieve PDF chunks from a persistent local Chroma collection."""
+    """Index chunks in PostgreSQL and retrieve them through hybrid search."""
 
-    def __init__(
-        self,
-        persist_dir: str | Path,
-        embedder: EmbeddingFunction | None = None,
-        collection_name: str = "prosight_project_documents",
-    ):
-        try:
-            import chromadb
-        except ImportError as error:
-            raise RuntimeError("Install project dependencies to enable the RAG store") from error
-        settings = get_settings()
-        self.embedder = embedder or OpenAIEmbedder(
-            settings.openai_api_key, settings.embedding_model
-        )
-        Path(persist_dir).mkdir(parents=True, exist_ok=True)
-        self.client = chromadb.PersistentClient(path=str(persist_dir))
-        self.collection = self.client.get_or_create_collection(
-            collection_name, metadata={"hnsw:space": "cosine"}
-        )
+    def __init__(self, persist_dir=None, embedder: EmbeddingFunction | None = None, **_: Any):
+        self.embedder = embedder
+        self.memory: dict[str, dict[str, Any]] = {}
+        self.requires_async_embeddings = embedder is None
+        if embedder is None:
+            settings = get_settings()
+            if not settings.supabase_url or not settings.supabase_service_role_key:
+                raise RuntimeError("Supabase RAG requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY")
+            self.user = SupabaseGateway()
+            self.service = SupabaseGateway(service=True)
 
     def add_chunks(self, chunks: list[dict[str, Any]]) -> None:
-        """Embed and persist normalized chunks in bounded batches."""
-        for offset in range(0, len(chunks), 64):
-            batch = chunks[offset : offset + 64]
-            texts = [item["text"] for item in batch]
-            self.collection.upsert(
-                ids=[item["id"] for item in batch],
-                documents=texts,
-                metadatas=[item["metadata"] for item in batch],
-                embeddings=self.embedder(texts),
+        """Persist normalized page chunks; PostgreSQL triggers queue embeddings."""
+        if self.embedder:
+            vectors = self.embedder([item["text"] for item in chunks])
+            for item, vector in zip(chunks, vectors):
+                self.memory[item["id"]] = {**item, "embedding": vector}
+            return
+        rows = []
+        for item in chunks:
+            metadata = dict(item["metadata"])
+            rows.append({
+                "id": item["id"], "document_id": metadata["document_id"],
+                "project_code": metadata["project_code"], "filename": metadata["filename"],
+                "page_number": metadata["page_number"], "chunk_number": metadata["chunk_number"],
+                "content": item["text"], "content_hash": item.get("content_hash", "pending"),
+                "token_count": item.get("token_count", len(item["text"].split())),
+                "reporting_date": metadata.get("reporting_date") or None,
+                "effective_date": metadata.get("effective_date") or date.today().isoformat(),
+                "date_status": metadata.get("date_status") or "fallback",
+                "metadata": metadata, "embedding_model": get_settings().embedding_model,
+                "embedding_status": "pending",
+            })
+        for offset in range(0, len(rows), 100):
+            self.service.request(
+                "POST", "/rest/v1/document_chunks?on_conflict=id", rows[offset:offset + 100],
+                prefer="return=minimal,resolution=merge-duplicates",
             )
 
     def search(self, query: str, project_code: str, limit: int = 5) -> RAGEvidence:
-        """Retrieve relevant project chunks, preferring newer report evidence."""
-        result = self.collection.query(
-            query_embeddings=self.embedder([query]),
-            n_results=max(10, min(limit * 4, 20)),
-            where={"project_code": project_code},
-            include=["documents", "metadatas", "distances"],
-        )
-        candidates: list[EvidenceItem] = []
-        for text, metadata, distance in zip(
-            result.get("documents", [[]])[0],
-            result.get("metadatas", [[]])[0],
-            result.get("distances", [[]])[0],
-        ):
-            citation = f"{metadata['filename']}, page {metadata['page_number']}"
-            candidates.append(
-                EvidenceItem(
-                    text=text,
-                    citation=citation,
-                    metadata={**metadata, "relevance": round(1 - float(distance), 4)},
-                )
-            )
-        if not candidates:
-            return RAGEvidence(query=query, project_code=project_code, evidence=[])
-        best_relevance = max(item.metadata["relevance"] for item in candidates)
-        relevant = [
-            item
-            for item in candidates
-            if item.metadata["relevance"] >= best_relevance - 0.15
-        ]
-        relevant.sort(
-            key=lambda item: (
-                item.metadata.get("effective_date", ""),
-                item.metadata["relevance"],
-            ),
-            reverse=True,
-        )
-        return RAGEvidence(
-            query=query, project_code=project_code, evidence=relevant[:limit]
-        )
+        if self.embedder:
+            return self._memory_search(query, project_code, limit)
+        payload = self.user.invoke("hybrid-search", {
+            "query": query, "project_code": project_code, "limit": limit,
+        })
+        evidence = []
+        for item in payload.get("evidence", []):
+            metadata = {
+                **(item.get("metadata") or {}),
+                "relevance": round(float(item.get("score", 0)), 6),
+            }
+            evidence.append(EvidenceItem(
+                text=item["content"],
+                citation=f"{item['filename']}, page {item['page_number']}",
+                metadata=metadata,
+            ))
+        return RAGEvidence(query=query, project_code=project_code, evidence=evidence)
+
+    def _memory_search(self, query: str, project_code: str, limit: int) -> RAGEvidence:
+        query_vector = self.embedder([query])[0]
+        candidates = []
+        for item in self.memory.values():
+            metadata = item["metadata"]
+            if metadata["project_code"] != project_code:
+                continue
+            vector = item["embedding"]
+            denominator = math.sqrt(sum(x*x for x in query_vector)) * math.sqrt(sum(x*x for x in vector))
+            score = sum(a*b for a,b in zip(query_vector, vector)) / denominator if denominator else 0
+            candidates.append((score, metadata.get("effective_date", ""), item))
+        candidates.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        evidence = [EvidenceItem(
+            text=item["text"],
+            citation=f"{item['metadata']['filename']}, page {item['metadata']['page_number']}",
+            metadata={**item["metadata"], "relevance": round(score, 4)},
+        ) for score, _, item in candidates[:limit]]
+        return RAGEvidence(query=query, project_code=project_code, evidence=evidence)
 
     def delete_document(self, document_id: str) -> None:
-        """Remove every vector belonging to one document."""
-        self.collection.delete(where={"document_id": document_id})
+        if self.embedder:
+            self.memory = {key: value for key, value in self.memory.items()
+                           if value["metadata"]["document_id"] != document_id}
+        else:
+            self.service.delete("document_chunks", document_id=f"eq.{document_id}")
 
     def close(self) -> None:
-        """Release local Chroma file handles, primarily for clean shutdown/tests."""
-        close = getattr(self.client, "close", None)
-        if close:
-            close()
+        return None

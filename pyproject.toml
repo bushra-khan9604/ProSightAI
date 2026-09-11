@@ -8,18 +8,22 @@ version = "0.2.0"
 description = "Construction project insights agent reference implementation"
 requires-python = ">=3.11"
 dependencies = [
-    "chromadb>=1.0,<2",
     "fastapi>=0.115,<1",
     "openai-agents>=0.4,<1",
     "openpyxl>=3.1,<4",
+    "PyJWT[crypto]>=2.10,<3",
     "pydantic>=2.10,<3",
     "pypdf>=5,<7",
     "python-multipart>=0.0.20,<1",
+    "tiktoken>=0.9,<1",
     "uvicorn>=0.34,<1",
 ]
 
 [project.scripts]
 prosight = "prosight.cli:main"
+
+[project.optional-dependencies]
+test = ["reportlab>=4,<5"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

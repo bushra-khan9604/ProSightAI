@@ -12,7 +12,7 @@ from reportlab.pdfgen import canvas
 
 from prosight.ingestion.excel import PROJECT_COLUMNS, preview_workbook
 from prosight.ingestion.manager import IngestionManager
-from prosight.ingestion.pdf import detect_reporting_date
+from prosight.ingestion.pdf import detect_reporting_date, extract_pdf_chunks
 from prosight.rag.store import RAGStore
 from prosight.repository import DEFAULT_DATA, ProjectRepository
 
@@ -212,6 +212,27 @@ class IngestionTests(unittest.TestCase):
             pdf.drawString(72, 735, "Reporting date: 31 August 2026")
             pdf.save()
             self.assertEqual("2026-08-31", detect_reporting_date(path))
+
+    def test_pdf_chunks_are_token_bounded_and_never_cross_pages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pages.pdf"
+            pdf = canvas.Canvas(str(path))
+            pdf.drawString(30, 760, "FIRSTPAGE " * 1200)
+            pdf.showPage()
+            pdf.drawString(30, 760, "SECONDPAGE evidence")
+            pdf.save()
+            chunks = extract_pdf_chunks(path, {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "project_code": "PRJ-2024-001", "filename": "pages.pdf",
+                "effective_date": "2026-09-11", "date_status": "confirmed",
+            })
+            self.assertEqual({1, 2}, {item["metadata"]["page_number"] for item in chunks})
+            self.assertTrue(all(item["token_count"] <= 800 for item in chunks))
+            self.assertTrue(all(len(item["content_hash"]) == 64 for item in chunks))
+            self.assertFalse(any(
+                "FIRSTPAGE" in item["text"] and "SECONDPAGE" in item["text"]
+                for item in chunks
+            ))
 
 
 if __name__ == "__main__":

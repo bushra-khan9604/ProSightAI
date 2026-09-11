@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from pypdf import PdfReader
+import tiktoken
 
 
 DATE_PATTERNS = (
@@ -34,13 +37,20 @@ def detect_reporting_date(path: Path) -> str | None:
     return None
 
 
-def _word_chunks(text: str, size: int = 800, overlap: int = 120) -> list[str]:
-    """Split text approximately by tokens using words as a deterministic proxy."""
-    words = re.findall(r"\S+", text)
-    if not words:
+@lru_cache(maxsize=1)
+def _embedding_encoding():
+    return tiktoken.get_encoding("cl100k_base")
+
+
+def _token_chunks(text: str, size: int = 800, overlap: int = 120) -> list[str]:
+    """Split one page with the embedding model tokenizer and stable overlap."""
+    encoding = _embedding_encoding()
+    tokens = encoding.encode(text)
+    if not tokens:
         return []
     step = max(1, size - overlap)
-    return [" ".join(words[start : start + size]) for start in range(0, len(words), step)]
+    return [encoding.decode(tokens[start : start + size]).strip()
+            for start in range(0, len(tokens), step)]
 
 
 def extract_pdf_chunks(path: Path, document: dict[str, Any]) -> list[dict[str, Any]]:
@@ -55,11 +65,13 @@ def extract_pdf_chunks(path: Path, document: dict[str, Any]) -> list[dict[str, A
         if not text:
             continue
         pages_with_text += 1
-        for chunk_number, chunk in enumerate(_word_chunks(text), start=1):
+        for chunk_number, chunk in enumerate(_token_chunks(text), start=1):
             chunks.append(
                 {
                     "id": f"{document['id']}:{page_number}:{chunk_number}",
                     "text": chunk,
+                    "token_count": len(_embedding_encoding().encode(chunk)),
+                    "content_hash": hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
                     "metadata": {
                         "document_id": document["id"],
                         "project_code": document["project_code"],

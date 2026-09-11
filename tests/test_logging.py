@@ -47,7 +47,6 @@ class LoggingTests(unittest.TestCase):
                 client = TestClient(create_app(repository))
                 response = client.post("/api/query", json={
                     "query": "Who is the manager for Marina Heights?",
-                    "user_role": "project_manager",
                     "project_code": "PRJ-2024-001",
                 })
                 self.assertEqual(200, response.status_code)

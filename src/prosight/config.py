@@ -39,6 +39,11 @@ class Settings:
     orchestrator_reasoning: ReasoningEffort
     writer_reasoning: ReasoningEffort
     embedding_model: str
+    data_backend: str
+    supabase_url: str
+    supabase_publishable_key: str
+    supabase_service_role_key: str
+    bootstrap_admin_email: str
 
 
 def _reasoning_effort(name: str, default: ReasoningEffort) -> ReasoningEffort:
@@ -60,4 +65,11 @@ def get_settings() -> Settings:
         orchestrator_reasoning=_reasoning_effort("OPENAI_ORCHESTRATOR_REASONING", "none"),
         writer_reasoning=_reasoning_effort("OPENAI_WRITER_REASONING", "low"),
         embedding_model=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        data_backend=os.environ.get("PROSIGHT_DATA_BACKEND", "auto").lower(),
+        supabase_url=os.environ.get("SUPABASE_URL", ""),
+        supabase_publishable_key=os.environ.get(
+            "SUPABASE_PUBLISHABLE_KEY", os.environ.get("SUPABASE_ANON_KEY", "")
+        ),
+        supabase_service_role_key=os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""),
+        bootstrap_admin_email=os.environ.get("PROSIGHT_BOOTSTRAP_ADMIN_EMAIL", ""),
     )

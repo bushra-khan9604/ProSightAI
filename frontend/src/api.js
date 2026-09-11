@@ -1,243 +1,96 @@
-/** Fetch projects after the backend has applied role-based field filtering. */
-export async function getProjects(role) {
-  const response = await fetch(`/api/projects?role=${encodeURIComponent(role)}`);
-  if (!response.ok) throw new Error("Could not load projects");
-  return response.json();
+import { supabase } from "./supabase";
+
+async function apiFetch(url, options = {}) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const headers = new Headers(options.headers || {});
+  if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
+  const response = await fetch(url, { ...options, headers });
+  if (response.status === 401) await supabase.auth.signOut();
+  return response;
 }
 
-/** Send a natural-language query to the configured ProSight AI provider. */
-export async function askAgent(query, userRole, projectCode = null, history = []) {
-  const response = await fetch("/api/query", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, history, user_role: userRole, project_code: projectCode }),
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    console.error("prosight.query_failed", {
-      request_id: payload.request_id,
-      status: response.status,
-      duration_ms: payload.duration_ms,
-    });
-    const error = new Error("The assistant could not answer");
-    error.requestId = payload.request_id;
-    throw error;
-  }
-  console.info("prosight.api_response_received", {
-    request_id: payload.request_id,
-    provider: payload.mode,
-    duration_ms: payload.duration_ms,
-  });
+async function json(response, fallback) {
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail?.message || payload.detail || fallback);
   return payload;
 }
 
-/** Stream Assistant execution states and return the compatible final response. */
-export async function askAgentStream(query, userRole, projectCode = null, history = [], handlers = {}) {
-  const response = await fetch("/api/query/stream", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ query, history, user_role: userRole, project_code: projectCode }),
-  });
-  if (!response.ok || !response.body) throw new Error("The assistant could not answer");
-  const reader=response.body.getReader(),decoder=new TextDecoder();
-  let buffer="",finalPayload=null,streamError=null;
-  while(true){
-    const {value,done}=await reader.read();
-    buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
-    const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";
-    for(const block of blocks){
-      const type=block.match(/^event:\s*(.+)$/m)?.[1];
-      const raw=block.match(/^data:\s*(.+)$/m)?.[1];
-      if(!type||!raw)continue;
-      const payload=JSON.parse(raw);
-      if(type==="status")handlers.onStatus?.(payload.label||"Thinking");
-      if(type==="final")finalPayload=payload;
-      if(type==="error")streamError=payload;
-    }
-    if(done)break;
-  }
-  if(streamError){const error=new Error(streamError.message||"The assistant could not answer");error.requestId=streamError.request_id;throw error;}
-  if(!finalPayload)throw new Error("The Assistant stream ended without a final response");
-  return finalPayload;
+export async function getMe() {
+  return json(await apiFetch("/api/me"), "Could not load your profile");
 }
 
-export async function updateProject(projectCode, project, role) {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectCode)}?role=${encodeURIComponent(role)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(project),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || "Could not update project");
-  return payload;
+export async function getProjects() {
+  return json(await apiFetch("/api/projects"), "Could not load projects");
 }
 
-export async function uploadProjectFile(file, projectCode, userRole) {
-  const body = new FormData();
-  body.append("file", file); body.append("project_code", projectCode); body.append("user_role", userRole);
-  const response = await fetch("/api/uploads", { method: "POST", body });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || "Upload failed");
-  return payload;
-}
-
-export async function getIngestionJob(jobId, role) {
-  const response = await fetch(`/api/ingestion-jobs/${jobId}?role=${encodeURIComponent(role)}`);
-  if (!response.ok) throw new Error("Could not load ingestion status");
-  return response.json();
-}
-
-export async function getProjectIngestionJobs(projectCode, role) {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectCode)}/ingestion-jobs?role=${encodeURIComponent(role)}`);
-  if (!response.ok) throw new Error("Could not load ingestion jobs");
-  return response.json();
-}
-
-export async function uploadPortfolioWorkbook(file, role, dataset = "combined", projectCode = "") {
-  const body = new FormData();
-  body.append("file", file); body.append("role", role); body.append("dataset", dataset);
-  if (projectCode) body.append("project_code", projectCode);
-  const response = await fetch("/api/portfolio-imports", { method: "POST", body });
-  const payload = await response.json();
-  if (!response.ok) {
-    const detail = payload.detail;
-    throw new Error(typeof detail === "object" ? detail.message : detail || "Portfolio import failed");
-  }
-  return payload;
-}
-
-export function portfolioTemplateUrl(role, dataset = "combined") {
-  return `/api/portfolio-imports/template?role=${encodeURIComponent(role)}&dataset=${encodeURIComponent(dataset)}`;
-}
-
-export async function getProjectSchedule(role, projectCode) {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectCode)}/schedule?role=${encodeURIComponent(role)}`);
-  if (!response.ok) throw new Error("Could not load project schedule");
-  return response.json();
-}
-
-export async function clearFailedIngestionJob(jobId, role) {
-  const response = await fetch(`/api/ingestion-jobs/${encodeURIComponent(jobId)}?role=${encodeURIComponent(role)}`, {
-    method: "DELETE",
+export async function askAgent(query, _userRole, projectCode = null, history = []) {
+  const response = await apiFetch("/api/query", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, history, project_code: projectCode }),
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const detail = payload.detail;
-    throw new Error(typeof detail === "string" ? detail : detail?.message || "Could not clear failed upload");
-  }
+  if (!response.ok) { const error = new Error("The assistant could not answer"); error.requestId = payload.request_id; throw error; }
   return payload;
 }
 
-export async function getPortfolioManpower(role, projectCode = "") {
-  const query = new URLSearchParams({ role });
-  if (projectCode) query.set("project_code", projectCode);
-  const response = await fetch(`/api/portfolio/manpower?${query}`);
-  if (!response.ok) throw new Error("Could not load portfolio manpower");
-  return response.json();
-}
-
-export async function getPortfolioInvoices(role, projectCode = "") {
-  const query = new URLSearchParams({ role });
-  if (projectCode) query.set("project_code", projectCode);
-  const response = await fetch(`/api/portfolio/invoices?${query}`);
-  if (!response.ok) throw new Error("Could not load project invoices");
-  return response.json();
-}
-
-export async function getInvoicePivot(role) {
-  const response = await fetch(`/api/portfolio/invoice-pivot?role=${encodeURIComponent(role)}`);
-  if (!response.ok) throw new Error("Could not load invoice pivot");
-  return response.json();
-}
-
-export async function getDocuments(projectCode, role) {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectCode)}/documents?role=${encodeURIComponent(role)}`);
-  if (!response.ok) throw new Error("Could not load project documents");
-  return response.json();
-}
-
-export async function getChangeRequest(changeId, role) {
-  const response = await fetch(`/api/change-requests/${changeId}?role=${encodeURIComponent(role)}`);
-  if (!response.ok) throw new Error("Could not load change preview");
-  return response.json();
-}
-
-export async function decideChange(changeId, decision, role) {
-  const response = await fetch(`/api/change-requests/${changeId}/${decision}?role=${encodeURIComponent(role)}`, { method: "POST" });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || "Could not decide change");
-  return payload;
-}
-
-export async function getNotifications(role, status = "all") {
-  const response = await fetch(`/api/notifications?role=${encodeURIComponent(role)}&status=${status}`);
-  if (!response.ok) throw new Error("Could not load notifications");
-  return response.json();
-}
-
-export async function markNotificationRead(notificationId, role) {
-  const response = await fetch(`/api/notifications/${notificationId}/read?role=${encodeURIComponent(role)}`, { method: "POST" });
-  if (!response.ok) throw new Error("Could not update notification");
-  return response.json();
-}
-
-export async function markAllNotificationsRead(role) {
-  const response = await fetch(`/api/notifications/read-all?role=${encodeURIComponent(role)}`, { method: "POST" });
-  if (!response.ok) throw new Error("Could not update notifications");
-  return response.json();
-}
-
-export async function getApprovals(role) {
-  const response = await fetch(`/api/approvals?role=${encodeURIComponent(role)}&status=pending`);
-  if (!response.ok) throw new Error("Could not load approval queue");
-  return response.json();
-}
-
-export async function deleteDocument(documentId, role) {
-  const response = await fetch(`/api/documents/${documentId}?role=${encodeURIComponent(role)}`, { method: "DELETE" });
-  if (!response.ok) throw new Error("Could not delete document");
-  return response.json();
-}
-
-export async function createProjectPreview(project, role) {
-  const response = await fetch(`/api/projects/change-preview?role=${encodeURIComponent(role)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(project),
+export async function askAgentStream(query, _userRole, projectCode = null, history = [], handlers = {}) {
+  const response = await apiFetch("/api/query/stream", {
+    method: "POST", headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({ query, history, project_code: projectCode }),
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || "Could not create project preview");
-  return payload;
+  if (!response.ok || !response.body) throw new Error("The assistant could not answer");
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="",finalPayload=null,streamError=null;
+  while(true){const {value,done}=await reader.read();buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
+    const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";
+    for(const block of blocks){const type=block.match(/^event:\s*(.+)$/m)?.[1],raw=block.match(/^data:\s*(.+)$/m)?.[1];
+      if(!type||!raw)continue;const payload=JSON.parse(raw);if(type==="status")handlers.onStatus?.(payload.label||"Thinking");
+      if(type==="final")finalPayload=payload;if(type==="error")streamError=payload;}
+    if(done)break;}
+  if(streamError){const error=new Error(streamError.message||"The assistant could not answer");error.requestId=streamError.request_id;throw error;}
+  if(!finalPayload)throw new Error("The Assistant stream ended without a final response");return finalPayload;
 }
 
-export async function createProjectImportPreview(file, role) {
-  const body = new FormData();
-  body.append("file", file);
-  body.append("role", role);
-  const response = await fetch("/api/projects/import-preview", { method: "POST", body });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || "Could not preview workbook");
-  return payload;
+export async function updateProject(projectCode, project) {
+  return json(await apiFetch(`/api/projects/${encodeURIComponent(projectCode)}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(project),
+  }), "Could not update project");
 }
 
-export async function updateProjectImport(changeId, project, role) {
-  const response = await fetch(`/api/change-requests/${changeId}?role=${encodeURIComponent(role)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(project),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || "Could not update import preview");
-  return payload;
+export async function uploadProjectFile(file, projectCode) {
+  const body=new FormData();body.append("file",file);body.append("project_code",projectCode);
+  return json(await apiFetch("/api/uploads",{method:"POST",body}),"Upload failed");
 }
 
-export async function confirmDocumentDate(jobId, reportingDate, role) {
-  const response = await fetch(`/api/ingestion-jobs/${jobId}/confirm-date?role=${encodeURIComponent(role)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reporting_date: reportingDate }),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || "Could not confirm report date");
-  return payload;
+export async function getIngestionJob(jobId) { return json(await apiFetch(`/api/ingestion-jobs/${jobId}`),"Could not load ingestion status"); }
+export async function getProjectIngestionJobs(projectCode) { return json(await apiFetch(`/api/projects/${encodeURIComponent(projectCode)}/ingestion-jobs`),"Could not load ingestion jobs"); }
+export async function clearFailedIngestionJob(jobId) { return json(await apiFetch(`/api/ingestion-jobs/${encodeURIComponent(jobId)}`,{method:"DELETE"}),"Could not clear failed upload"); }
+
+export async function uploadPortfolioWorkbook(file, _role, dataset="combined", projectCode="") {
+  const body=new FormData();body.append("file",file);body.append("dataset",dataset);if(projectCode)body.append("project_code",projectCode);
+  return json(await apiFetch("/api/portfolio-imports",{method:"POST",body}),"Portfolio import failed");
 }
+
+export async function downloadPortfolioTemplate(_role, dataset="combined") {
+  const response=await apiFetch(`/api/portfolio-imports/template?dataset=${encodeURIComponent(dataset)}`);
+  if(!response.ok)throw new Error("Could not download template");
+  const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");
+  link.href=url;link.download=`ProSight-${dataset}-Import-Template.xlsx`;link.click();URL.revokeObjectURL(url);
+}
+
+export const portfolioTemplateUrl = () => "#";
+export async function getProjectSchedule(_role, projectCode) { return json(await apiFetch(`/api/projects/${encodeURIComponent(projectCode)}/schedule`),"Could not load project schedule"); }
+export async function getPortfolioManpower(_role, projectCode="") { const q=new URLSearchParams();if(projectCode)q.set("project_code",projectCode);return json(await apiFetch(`/api/portfolio/manpower?${q}`),"Could not load portfolio manpower"); }
+export async function getPortfolioInvoices(_role, projectCode="") { const q=new URLSearchParams();if(projectCode)q.set("project_code",projectCode);return json(await apiFetch(`/api/portfolio/invoices?${q}`),"Could not load project invoices"); }
+export async function getInvoicePivot() { return json(await apiFetch("/api/portfolio/invoice-pivot"),"Could not load invoice pivot"); }
+export async function getDocuments(projectCode) { return json(await apiFetch(`/api/projects/${encodeURIComponent(projectCode)}/documents`),"Could not load project documents"); }
+export async function getChangeRequest(changeId) { return json(await apiFetch(`/api/change-requests/${changeId}`),"Could not load change preview"); }
+export async function decideChange(changeId,decision) { return json(await apiFetch(`/api/change-requests/${changeId}/${decision}`,{method:"POST"}),"Could not decide change"); }
+export async function getNotifications(_role,status="all") { return json(await apiFetch(`/api/notifications?status=${status}`),"Could not load notifications"); }
+export async function markNotificationRead(notificationId) { return json(await apiFetch(`/api/notifications/${notificationId}/read`,{method:"POST"}),"Could not update notification"); }
+export async function markAllNotificationsRead() { return json(await apiFetch("/api/notifications/read-all",{method:"POST"}),"Could not update notifications"); }
+export async function getApprovals() { return json(await apiFetch("/api/approvals?status=pending"),"Could not load approval queue"); }
+export async function deleteDocument(documentId) { return json(await apiFetch(`/api/documents/${documentId}`,{method:"DELETE"}),"Could not delete document"); }
+export async function createProjectPreview(project) { return json(await apiFetch("/api/projects/change-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(project)}),"Could not create project preview"); }
+export async function createProjectImportPreview(file) { const body=new FormData();body.append("file",file);return json(await apiFetch("/api/projects/import-preview",{method:"POST",body}),"Could not preview workbook"); }
+export async function updateProjectImport(changeId,project) { return json(await apiFetch(`/api/change-requests/${changeId}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(project)}),"Could not update import preview"); }
+export async function confirmDocumentDate(jobId,reportingDate) { return json(await apiFetch(`/api/ingestion-jobs/${jobId}/confirm-date`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({reporting_date:reportingDate})}),"Could not confirm report date"); }

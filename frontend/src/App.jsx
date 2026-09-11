@@ -3,7 +3,7 @@ import {
   Activity, Bell, BookOpen, Bot, BriefcaseBusiness, Building2,
   Check, ChevronDown, ChevronRight, CircleDollarSign, Clock3, LayoutDashboard, Menu,
   FileSpreadsheet, FileText, HardHat, Moon, Plus, ReceiptText, RotateCcw,
-  Send, Sparkles, Sun, Trash2, TrendingUp, Upload, Users, Wrench, X,
+  LogOut, Send, Sparkles, Sun, Trash2, TrendingUp, Upload, Users, Wrench, X,
 } from "lucide-react";
 import {
   Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
@@ -14,11 +14,12 @@ import {
   decideChange, deleteDocument, getChangeRequest, getDocuments, getIngestionJob,
   getApprovals, getInvoicePivot, getNotifications, getPortfolioInvoices, getProjectSchedule,
   getPortfolioManpower, getProjectIngestionJobs, getProjects, markAllNotificationsRead,
-  markNotificationRead, portfolioTemplateUrl, updateProject, updateProjectImport,
+  downloadPortfolioTemplate, markNotificationRead, portfolioTemplateUrl, updateProject, updateProjectImport,
   uploadPortfolioWorkbook, uploadProjectFile,
 } from "./api";
 
 const roles = {
+  Employee: "employee",
   "Project Manager": "project_manager",
   "Planning Engineer": "planning_engineer",
   Admin: "admin",
@@ -75,12 +76,6 @@ const nav = [
   ["dashboard", "Command Center", LayoutDashboard],
   ["projects", "Project Explorer", Building2],
 ];
-const roleOptions = [
-  {value:"Project Manager",label:"Project Manager"},
-  {value:"Planning Engineer",label:"Planning Engineer"},
-  {value:"Admin",label:"Admin"},
-];
-
 const money = (value) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
 
@@ -148,7 +143,7 @@ function Status({ project }) {
   return <span className={`status ${risk ? "risk" : "success"}`}>{risk ? "At risk" : "On track"}</span>;
 }
 
-function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, setRole, refreshProjects, onActivityCleared }) {
+function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, profile, onSignOut, refreshProjects, onActivityCleared }) {
   return <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand">
       <div className="brand-mark"><img src="/prosight-logo.svg" alt="ProSight AI construction intelligence"/></div>
@@ -160,7 +155,7 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, 
       </button>)}
     </nav>
     <div className="sidebar-foot">
-      <SidebarUtilities {...{dark,setDark,role,setRole,refreshProjects,onActivityCleared,collapsed}}/>
+      <SidebarUtilities {...{dark,setDark,role,profile,onSignOut,refreshProjects,onActivityCleared,collapsed}}/>
       <button className="collapse" aria-label={collapsed?"Expand sidebar":"Collapse sidebar"} title={collapsed?"Expand sidebar":"Collapse sidebar"} onClick={() => setCollapsed(!collapsed)}>
         <Menu size={18}/>
       </button>
@@ -169,7 +164,7 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, 
 }
 
 /** Role, notification, and theme utilities anchored in the sidebar. */
-function SidebarUtilities({ dark, setDark, role, setRole, refreshProjects, onActivityCleared, collapsed }) {
+function SidebarUtilities({ dark, setDark, role, profile, onSignOut, refreshProjects, onActivityCleared, collapsed }) {
   const [open,setOpen]=useState(false),[notifications,setNotifications]=useState([]);
   const [unread,setUnread]=useState(0),[approvals,setApprovals]=useState([]);
   const [loading,setLoading]=useState(false),[error,setError]=useState("");
@@ -215,8 +210,9 @@ function SidebarUtilities({ dark, setDark, role, setRole, refreshProjects, onAct
     try{await markAllNotificationsRead(roleKey);await refreshCenter()}catch(err){setError(err.message)}
   }
   return <div className="sidebar-utilities">
-    <SmartSelect label="Role" value={role} options={roleOptions} onChange={setRole} icon={Users}
-      className="role-select" compact={collapsed}/>
+    <div className={`role-identity ${collapsed?"compact":""}`} title={`${profile?.email||"Signed in"} · ${role}`}>
+      <Users size={17}/>{!collapsed&&<span><b>{profile?.display_name||profile?.email||"Signed in"}</b><small>{role}</small></span>}
+    </div>
     <div className="utility-actions">
       <div className="notification-center" ref={centerRef}>
         <button className="icon-btn" aria-label="Notifications" aria-expanded={open}
@@ -249,6 +245,7 @@ function SidebarUtilities({ dark, setDark, role, setRole, refreshProjects, onAct
       <button className="theme-switch" aria-label={`Switch to ${dark?"light":"dark"} mode`} title={collapsed?`${dark?"Light":"Dark"} mode`:undefined} onClick={() => setDark(!dark)}>
         {dark ? <Sun size={16}/> : <Moon size={16}/>}<span>{dark ? "Light" : "Dark"}</span>
       </button>
+      <button className="icon-btn" aria-label="Sign out" title="Sign out" onClick={onSignOut}><LogOut size={17}/></button>
     </div>
   </div>;
 }
@@ -510,7 +507,8 @@ function PortfolioImport({open,onClose,roleKey,onImported,projects,selectedProje
       <div className="portfolio-upload-grid"><section className={`portfolio-upload-option ${activeDataset===item.dataset?"active":""}`}>
         <div className="portfolio-card-heading"><i><FileSpreadsheet size={20}/></i><div><h3>{item.title}</h3><p>{item.description}</p></div></div>
         <a className="template-download" href={portfolioTemplateUrl(roleKey,item.dataset)} aria-disabled={loading}
-          tabIndex={loading?-1:0} onClick={event=>{if(loading)event.preventDefault()}}><FileSpreadsheet size={17}/><span>Download {item.title} template</span></a>
+          tabIndex={loading?-1:0} onClick={event=>{event.preventDefault();if(!loading)downloadPortfolioTemplate(roleKey,item.dataset)
+            .catch(error=>setFeedback({type:"error",message:error.message}))}}><FileSpreadsheet size={17}/><span>Download {item.title} template</span></a>
         <div className="upload-divider"><span>Then upload completed workbook</span></div>
         {item.dataset==="schedule"&&<label className="schedule-project-select"><span>Target project</span><select value={scheduleProject} disabled={loading} onChange={event=>setScheduleProject(event.target.value)}>
           {projects.map(project=><option value={project.code} key={project.code}>{project.code} — {project.name}</option>)}</select></label>}
@@ -906,20 +904,21 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
 /** Root component responsible for shared provider data, theme, and navigation state. */
 const initialMessages=()=>[{role:"assistant",content:"Hello — I’m ProSight AI. Ask me about project progress, contacts, activities, resources, or milestones.",citations:[],intro:true}];
 
-export default function App(){
+export default function App({profile,onSignOut}){
   const [page,setPage]=useState("assistant"),[dark,setDark]=useState(()=>localStorage.theme==="dark");
-  const [role,setRole]=useState("Project Manager"),[projects,setProjects]=useState([]),[loading,setLoading]=useState(true);
+  const role=({employee:"Employee",project_manager:"Project Manager",planning_engineer:"Planning Engineer",admin:"Admin"})[profile?.role]||"Employee";
+  const [projects,setProjects]=useState([]),[loading,setLoading]=useState(true);
   const [collapsed,setCollapsed]=useState(false),[initialQuery,setInitialQuery]=useState("");
   const [messages,setMessages]=useState(initialMessages),[dataRevision,setDataRevision]=useState(0);
   const [assistantProject,setAssistantProject]=useState(""),[explorerProject,setExplorerProject]=useState("");
   // Theme preference is local to the browser and does not affect server data.
   useEffect(()=>{document.documentElement.dataset.theme=dark?"dark":"light";localStorage.theme=dark?"dark":"light"},[dark]);
-  // Changing roles refetches data so contact masking is enforced by Python.
+  // The verified profile role controls backend authorization and field masking.
   async function refreshProjects(showLoader=false){
     if(showLoader)setLoading(true);
     try{setProjects(await getProjects(roles[role]))}finally{if(showLoader)setLoading(false)}
   }
-  useEffect(()=>{refreshProjects(true)},[role]);
+  useEffect(()=>{refreshProjects(true)},[profile?.id]);
   async function activityCleared(item){
     if(item.event_type==="change_approved"){
       await refreshProjects();
@@ -929,7 +928,7 @@ export default function App(){
   function goToAssistant(q){setInitialQuery(q);setPage("assistant")}
   return <div className="app-shell"><Sidebar {...{page,setPage,collapsed,setCollapsed,dark,setDark,refreshProjects}}
     onActivityCleared={activityCleared}
-    role={role} setRole={nextRole=>{setRole(nextRole);setMessages(initialMessages());setAssistantProject("")}}/><div className="main-shell">
+    role={role} profile={profile} onSignOut={onSignOut}/><div className="main-shell">
     <main className={loading?"loading":""}>
       {loading?<div className="loader"><i/></div>:<>
       {page==="dashboard"&&<Dashboard projects={projects} goToAssistant={goToAssistant}/>}
