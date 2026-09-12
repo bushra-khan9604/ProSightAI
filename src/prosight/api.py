@@ -585,6 +585,7 @@ def create_app(repository=None) -> FastAPI:
         file: UploadFile = File(...),
         user_role: str = Depends(caller_role),
     ) -> dict:
+        _require_role(user_role, {"project_manager", "planning_engineer", "admin"}, "This role cannot upload documents or data")
         require_project_access(project_code)
         if not runtime.ingestion:
             raise HTTPException(
@@ -622,6 +623,7 @@ def create_app(repository=None) -> FastAPI:
         role: str = Depends(caller_role),
     ) -> dict:
         """Confirm the PDF reporting date and resume indexing."""
+        _require_role(role, {"project_manager", "planning_engineer", "admin"}, "This role cannot modify document ingestion")
         if not runtime.ingestion:
             raise HTTPException(status_code=503, detail="RAG runtime unavailable")
         try:

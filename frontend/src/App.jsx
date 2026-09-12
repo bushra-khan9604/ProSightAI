@@ -147,7 +147,7 @@ function Status({ project }) {
 function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, profile, onSignOut, refreshProjects, onActivityCleared }) {
   return <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand">
-      <div className="brand-mark"><img src="/prosight-logo.svg" alt="ProSight AI construction intelligence"/></div>
+      <div className="brand-mark"><img src={dark ? "/prosight-logo-dark.svg" : "/prosight-logo.svg"} alt="ProSight AI construction intelligence"/></div>
       {!collapsed && <div><strong>ProSight AI</strong><small>Construction intelligence</small></div>}
     </div>
     <nav>{nav.map(([id, label, Icon]) =>
@@ -395,9 +395,9 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
       <div className="project-title-actions">
         <SmartSelect label="Selected project" value={project.code} options={projectOptions} onChange={setSelected}
           icon={Building2} className="explorer-project-select"/>
-        <button className="primary create-project-action" onClick={()=>setPortfolioOpen(true)}>
+        {roleKey!=="employee"&&<button className="primary create-project-action" onClick={()=>setPortfolioOpen(true)}>
           <FileSpreadsheet size={16}/> Portfolio Import
-        </button>
+        </button>}
         {["project_manager","admin"].includes(roleKey)&&<button className="primary create-project-action" onClick={()=>setCreateOpen(true)}><Plus size={16}/> Create Project</button>}
       </div>
     </PageTitle>
@@ -408,7 +408,7 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
         <div><span>Variance</span><strong className={project.variance_pct<0?"negative":""}>{project.variance_pct>0?"+":""}{project.variance_pct} pp</strong></div>
         <div><span>Delay</span><strong>{project.delay_days} days</strong></div></div>
     </section>
-    <div className="tabs">{["overview","contacts","operations","milestones","project schedule","portfolio manpower","project invoices","invoice pivot","update project"].map((item)=>
+    <div className="tabs">{["overview","contacts","operations","milestones","project schedule","portfolio manpower","project invoices","invoice pivot","update project"].filter(item=>item!=="update project"||roleKey!=="employee").map((item)=>
       <button className={tab===item?"active":""} onClick={()=>setTab(item)} key={item}>{item}</button>)}</div>
     {tab==="overview" && <section className="lower-grid">
       <article className="card"><CardTitle title="Schedule & progress"/><div className="date-grid">
@@ -450,10 +450,10 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
       <td>{item.risk_profile}</td><td>{item.live_aging_days??"—"}</td>
     </tr>)}</tbody></table>{invoices.length===0&&<p className="empty">No invoices imported for this project.</p>}</article>}
     {tab==="invoice pivot"&&<InvoicePivot rows={pivot} projects={projects}/>}
-    <div hidden={tab!=="update project"}><UploadCenter
+    {roleKey!=="employee"&&<div hidden={tab!=="update project"}><UploadCenter
       open embedded workspaceMode="update" role={role} projects={projects} selectedProject={project.code}
       setSelectedProject={setSelected} refreshProjects={refreshProjects} dataRevision={dataRevision}
-    /></div>
+    /></div>}
     <UploadCenter
       open={createOpen} workspaceMode="create" onClose={()=>setCreateOpen(false)}
       role={role} projects={projects} selectedProject={project.code}
@@ -503,7 +503,7 @@ function PortfolioImport({open,onClose,roleKey,onImported,projects,selectedProje
   const item=options.find(option=>option.dataset===dataset)||options[0];
   const datasetOptions=options.map(option=>({value:option.dataset,label:option.title,description:option.description}));
   function selectDataset(value){setDataset(value);setFeedback(null);setSelectedFile("")}
-  if(!open)return null;
+  if(!open||roleKey==="employee")return null;
   return <div className="upload-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget&&!loading)onClose()}}>
     <aside className={`upload-center portfolio-import ${loading?"is-loading":""}`} role="dialog" aria-modal="true" aria-label="Portfolio Data Import">
       <div className="upload-head"><div><span>PORTFOLIO CONTROLS</span><h2>Portfolio Data Import</h2></div>
@@ -693,6 +693,7 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
     }catch(e){setError(e.message)}
   }
   if(!open)return null;
+  if(roleKey==="employee")return null;
   const content=<aside className={`upload-center ${embedded?"embedded":""}`} role={embedded?undefined:"dialog"} aria-modal={embedded?undefined:"true"} aria-label={formMode==="create"?"Create Project":"Update Project"} onMouseDown={event=>event.stopPropagation()}>
     <div className="upload-head"><div><span>PROJECT CONTROLS</span><h2>{formMode==="create"?"Create Project":`Update ${selectedProjectData?.name||selectedProject}`}</h2></div>{!embedded&&<button onClick={onClose}><X/></button>}</div>
     <section className="new-project-panel">

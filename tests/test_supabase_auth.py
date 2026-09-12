@@ -88,6 +88,30 @@ class SupabaseAuthApiTests(unittest.TestCase):
                 self.assertNotIn("role", names)
                 self.assertNotIn("user_role", names)
 
+    def test_employee_cannot_upload_or_confirm_document_date(self):
+        headers = {"Authorization": "Bearer valid-test-token"}
+        response = self.client.post(
+            "/api/uploads", headers=headers,
+            data={"project_code": "PRJ-2024-001"},
+            files={"file": ("report.pdf", b"%PDF-test", "application/pdf")},
+        )
+        self.assertEqual(403, response.status_code)
+        response = self.client.post(
+            "/api/ingestion-jobs/unknown/confirm-date", headers=headers,
+            json={"reporting_date": "2026-09-01"},
+        )
+        self.assertEqual(403, response.status_code)
+
+    def test_employee_cannot_import_or_delete_documents(self):
+        headers = {"Authorization": "Bearer valid-test-token"}
+        response = self.client.post(
+            "/api/portfolio-imports", headers=headers,
+            data={"dataset": "manpower"},
+            files={"file": ("manpower.xlsx", b"PK-test", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        self.assertEqual(403, response.status_code)
+        self.assertEqual(403, self.client.delete("/api/documents/unknown", headers=headers).status_code)
+
 
 if __name__ == "__main__":
     unittest.main()

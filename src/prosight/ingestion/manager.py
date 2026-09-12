@@ -58,6 +58,8 @@ class IngestionManager:
         self, source: Path, original_name: str, project_code: str, actor_role: str
     ) -> dict:
         """Validate, copy, register, and enqueue one PDF or XLSX upload."""
+        if actor_role not in {"project_manager", "planning_engineer", "admin"}:
+            raise PermissionError("This role cannot upload documents or data")
         safe_name = Path(original_name).name
         if safe_name != original_name or safe_name in {"", ".", ".."}:
             raise ValueError("Invalid filename")
