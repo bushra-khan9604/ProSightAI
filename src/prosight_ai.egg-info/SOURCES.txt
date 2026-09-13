@@ -9,6 +9,7 @@ src/prosight/config.py
 src/prosight/contracts.py
 src/prosight/migration.py
 src/prosight/observability.py
+src/prosight/portfolio_contract.py
 src/prosight/prompts.py
 src/prosight/repository.py
 src/prosight/supabase_gateway.py
@@ -18,6 +19,15 @@ src/prosight/agents/database_manager.py
 src/prosight/agents/orchestrator.py
 src/prosight/agents/rag_agent.py
 src/prosight/agents/writer.py
+src/prosight/controls/__init__.py
+src/prosight/controls/api.py
+src/prosight/controls/calculations.py
+src/prosight/controls/exports.py
+src/prosight/controls/jobs.py
+src/prosight/controls/specialists.py
+src/prosight/controls/store.py
+src/prosight/controls/workbook_schema.json
+src/prosight/controls/workbooks.py
 src/prosight/ingestion/__init__.py
 src/prosight/ingestion/excel.py
 src/prosight/ingestion/manager.py
@@ -38,9 +48,11 @@ src/prosight_ai.egg-info/entry_points.txt
 src/prosight_ai.egg-info/requires.txt
 src/prosight_ai.egg-info/top_level.txt
 tests/test_agent.py
+tests/test_controls.py
 tests/test_default_project_enrichment.py
 tests/test_ingestion.py
 tests/test_logging.py
+tests/test_manpower_dashboard.py
 tests/test_multi_agent.py
 tests/test_notifications.py
 tests/test_portfolio_import.py

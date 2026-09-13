@@ -1,0 +1,2135 @@
+{
+  "notice": "Synthetic demonstration data \u2014 not an actual project record.",
+  "schema_version": "1.0",
+  "date_format": "YYYY-MM-DD",
+  "tables": [
+    {
+      "sheet": "Scope Quantities",
+      "primary_key": [
+        "project_code",
+        "scope_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "scope_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "wbs_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "work_item",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "quantity",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "unit",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "productivity_per_labor_hour",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "crew_size",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "working_hours_per_day",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "acceptance",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "engineering_ref",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "exclusion",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Resources",
+      "primary_key": [
+        "project_code",
+        "resource_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "resource_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "trade",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "skill",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "crew_size",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "available_crews",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "labor_hour_rate_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "equipment_day_rate_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "available_from",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "available_to",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "mobilization_days",
+          "type": "number",
+          "nullable": false,
+          "unit": "calendar_days"
+        },
+        {
+          "name": "restriction",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Calendars",
+      "primary_key": [
+        "project_code",
+        "calendar_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "calendar_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "working_days",
+          "type": "string",
+          "nullable": false,
+          "unit": "calendar_days"
+        },
+        {
+          "name": "hours_per_day",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "exceptions",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Commercial",
+      "primary_key": [
+        "project_code"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "project_code",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "contract_value_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "target_start",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "target_finish",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "retention_fraction",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "receipt_lag_days",
+          "type": "number",
+          "nullable": false,
+          "unit": "calendar_days"
+        },
+        {
+          "name": "supplier_payment_days",
+          "type": "number",
+          "nullable": false,
+          "unit": "calendar_days"
+        },
+        {
+          "name": "advance_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "tax_fraction",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Assumptions",
+      "primary_key": [
+        "project_code",
+        "assumption_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "assumption_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "topic",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Source Snapshot",
+      "primary_key": [
+        "project_code",
+        "code",
+        "reporting_date"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "code",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "client",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "location",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "contract_value_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "planned_start",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "planned_finish",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "revised_finish",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "reporting_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "baseline_progress",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "revised_progress",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "actual_progress",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Overview",
+      "primary_key": [
+        "project_code"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "project_code",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "data_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "construction_finish",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "financial_asof",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "contract_revenue_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "bac_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "ev_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "ac_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "pv_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        }
+      ]
+    },
+    {
+      "sheet": "Schedule",
+      "primary_key": [
+        "project_code",
+        "activity_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "wbs_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "calendar_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "duration_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "baseline_start",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "baseline_finish",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "forecast_start",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "forecast_finish",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "actual_start",
+          "type": "date",
+          "nullable": true,
+          "unit": null
+        },
+        {
+          "name": "actual_finish",
+          "type": "date",
+          "nullable": true,
+          "unit": null
+        },
+        {
+          "name": "remaining_duration_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "quantity",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "unit",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "crew_size",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "productivity_per_labor_hour",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "budget_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "cost_code",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "resource_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "baseline_float_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "forecast_float_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        }
+      ]
+    },
+    {
+      "sheet": "Relationships",
+      "primary_key": [
+        "project_code",
+        "relationship_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "relationship_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "predecessor_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "successor_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "baseline_lag_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "forecast_lag_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "event_id",
+          "type": "string",
+          "nullable": true,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Milestones",
+      "primary_key": [
+        "project_code",
+        "activity_id",
+        "kind"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "duration_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        }
+      ]
+    },
+    {
+      "sheet": "Snapshots",
+      "primary_key": [
+        "project_code",
+        "version_id",
+        "activity_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "version_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "data_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "actual_start",
+          "type": "date",
+          "nullable": true,
+          "unit": null
+        },
+        {
+          "name": "actual_finish",
+          "type": "date",
+          "nullable": true,
+          "unit": null
+        },
+        {
+          "name": "remaining_duration_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "forecast_start",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "forecast_finish",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "synthetic",
+          "type": "boolean",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Cost Baseline",
+      "primary_key": [
+        "project_code",
+        "cost_code"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "cost_code",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "quantity",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "unit",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "unit_rate_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "labor_budget_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "equipment_budget_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "material_subcontract_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "budget_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "earning_method",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "budget_weight",
+          "type": "number",
+          "nullable": false,
+          "unit": "fraction_0_1"
+        },
+        {
+          "name": "labor_hour_rate_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "equipment_day_rate_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        }
+      ]
+    },
+    {
+      "sheet": "Budget Periods",
+      "primary_key": [
+        "project_code",
+        "period_end",
+        "activity_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "period_end",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "cost_code",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "planned_value_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        }
+      ]
+    },
+    {
+      "sheet": "Measurements",
+      "primary_key": [
+        "project_code",
+        "measurement_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "measurement_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "period_end",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "quantity_this_period",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "cumulative_quantity",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "unit",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "completion_fraction",
+          "type": "number",
+          "nullable": false,
+          "unit": "fraction_0_1"
+        },
+        {
+          "name": "earned_value_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "evidence_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Actual Costs",
+      "primary_key": [
+        "project_code",
+        "transaction_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "transaction_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "cost_code",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "labor_hours",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "cost_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "evidence_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Performance",
+      "primary_key": [
+        "project_code",
+        "period_end"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "period_end",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "record_kind",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "pv_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "ev_usd",
+          "type": "number",
+          "nullable": true,
+          "unit": "USD"
+        },
+        {
+          "name": "ac_usd",
+          "type": "number",
+          "nullable": true,
+          "unit": "USD"
+        },
+        {
+          "name": "bac_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "cpi",
+          "type": "number",
+          "nullable": true,
+          "unit": null
+        },
+        {
+          "name": "spi",
+          "type": "number",
+          "nullable": true,
+          "unit": null
+        },
+        {
+          "name": "eac_usd",
+          "type": "number",
+          "nullable": true,
+          "unit": "USD"
+        }
+      ]
+    },
+    {
+      "sheet": "Assignments",
+      "primary_key": [
+        "project_code",
+        "assignment_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "assignment_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "resource_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "start_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "finish_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "people",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "daily_hours",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "planned_labor_hours",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "equipment_units",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Procurement",
+      "primary_key": [
+        "project_code",
+        "package_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "package_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "quantity",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "unit",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "lead_days",
+          "type": "number",
+          "nullable": false,
+          "unit": "calendar_days"
+        },
+        {
+          "name": "required_on_site",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "planned_order_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "actual_order_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "planned_delivery",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "actual_delivery",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "forecast_delivery",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "approval_due",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "supplier",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "owner",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "commitment_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Constraints",
+      "primary_key": [
+        "project_code",
+        "constraint_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "constraint_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "event_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "owner",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "required_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "due_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Risks",
+      "primary_key": [
+        "project_code",
+        "risk_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "risk_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "probability",
+          "type": "number",
+          "nullable": false,
+          "unit": "fraction_0_1"
+        },
+        {
+          "name": "impact_cost_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "impact_days",
+          "type": "number",
+          "nullable": false,
+          "unit": "calendar_days"
+        },
+        {
+          "name": "owner",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "mitigation",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Changes",
+      "primary_key": [
+        "project_code",
+        "change_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "change_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "approval",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "budget_delta_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "baseline_preserved",
+          "type": "boolean",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Delay Events",
+      "primary_key": [
+        "project_code",
+        "event_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "event_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "event_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "lag_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "project_impact_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "classification",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "evidence_doc",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "owner",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "resolution_date",
+          "type": "date",
+          "nullable": true,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Billing",
+      "primary_key": [
+        "project_code",
+        "invoice_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "invoice_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "period_end",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "gross_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "retention_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "net_due_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "due_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "paid_date",
+          "type": "date",
+          "nullable": true,
+          "unit": null
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Cash Flow",
+      "primary_key": [
+        "project_code",
+        "period_end"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "period_end",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "opening_cash_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "receipts_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "payments_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "closing_cash_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        }
+      ]
+    },
+    {
+      "sheet": "Recovery Options",
+      "primary_key": [
+        "project_code",
+        "option_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "option_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_reduction_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "project_reduction_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": "working_days"
+        },
+        {
+          "name": "completion_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "incremental_cost_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Measurement Plan",
+      "primary_key": [
+        "project_code",
+        "measurement_rule_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "measurement_rule_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "baseline_quantity",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "unit",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "earning_method",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "budget_weight",
+          "type": "number",
+          "nullable": false,
+          "unit": "fraction_0_1"
+        },
+        {
+          "name": "acceptance_record",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "approver",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Benchmarks",
+      "primary_key": [
+        "project_code",
+        "benchmark_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "benchmark_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "work_type",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "location",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "price_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "unit",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "quantity",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "actual_labor_hours",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "quantity_per_labor_hour",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "actual_cost_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "unit_cost_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "crew_size",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "limitation",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Lead Times",
+      "primary_key": [
+        "project_code",
+        "package_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "package_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "planned_lead_days",
+          "type": "number",
+          "nullable": false,
+          "unit": "calendar_days"
+        },
+        {
+          "name": "actual_lead_days",
+          "type": "number",
+          "nullable": false,
+          "unit": "calendar_days"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Demand",
+      "primary_key": [
+        "project_code",
+        "scenario_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "project_code",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "scenario_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "resource_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "start_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "finish_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "requested_teams",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "portfolio_available_teams",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "warning",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Capacity",
+      "primary_key": [
+        "project_code",
+        "resource_id",
+        "start_date"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "resource_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "start_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "finish_date",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "available_teams",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "team_size",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "team_day_cost_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        }
+      ]
+    },
+    {
+      "sheet": "Options",
+      "primary_key": [
+        "project_code",
+        "option"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "option",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "first_project",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "second_project",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "second_start",
+          "type": "date",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "incremental_cost_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": "USD"
+        },
+        {
+          "name": "tradeoff",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "WBS",
+      "primary_key": [
+        "project_code",
+        "wbs_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "wbs_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Requirements",
+      "primary_key": [
+        "project_code",
+        "requirement_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "requirement_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "source_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "source_quote",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Planning Documents",
+      "primary_key": [
+        "project_code",
+        "document"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "document",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Proposed Recovery",
+      "primary_key": [
+        "project_code",
+        "activity_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "activity_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "activity_reduction_wd",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "incremental_cost_usd",
+          "type": "number",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "basis",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    },
+    {
+      "sheet": "Historical Sources",
+      "primary_key": [
+        "project_code",
+        "version_id"
+      ],
+      "implicit_project_scope": true,
+      "fields": [
+        {
+          "name": "project_code",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        },
+        {
+          "name": "version_id",
+          "type": "string",
+          "nullable": false,
+          "unit": null
+        }
+      ]
+    }
+  ],
+  "note": "project_code is supplied by the authenticated project import context where omitted from a sheet. Validate all fields; nullable metadata describes generated coverage, not a license to skip required business inputs."
+}

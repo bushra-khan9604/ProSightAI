@@ -7,17 +7,23 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-AgentName = Literal["database_manager", "rag", "writer"]
+AgentName = Literal["database_manager", "rag", "analyst", "planner", "writer"]
 
 
 class OrchestrationPlan(BaseModel):
     """A safe, inspectable plan created before specialists are invoked."""
 
-    intent: Literal["greeting", "database_read", "rag_read", "combined", "database_write", "unsupported"]
+    intent: Literal["greeting", "database_read", "rag_read", "combined", "database_write", "analysis", "planning", "recovery", "unsupported"]
     agents: list[AgentName] = Field(default_factory=list)
     project_code: str | None = None
     requires_write_approval: bool = False
     steps: list[str] = Field(default_factory=list)
+
+
+class SpecialistIntent(BaseModel):
+    """Classifier output chooses a workflow, never a mutation or arbitrary tool."""
+    workflow: Literal['ordinary','analysis','planning','recovery','clarify']
+    clarification: str | None
 
 
 class EvidenceItem(BaseModel):
@@ -52,6 +58,7 @@ class WriterInput(BaseModel):
     database: DatabaseEvidence | None = None
     rag: RAGEvidence | None = None
     database_table: str | None = None
+    specialist_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentAnswer(BaseModel):
@@ -63,6 +70,13 @@ class AgentAnswer(BaseModel):
     mode: str = "openai"
     notice: str | None = None
     time_to_first_token_ms: int | None = None
+    run_id: str | None = None
+    dataset_version: str | None = None
+    project_code: str | None = None
+    readiness: dict[str, Any] | None = None
+    draft_id: str | None = None
+    structured_results: dict[str, Any] | None = None
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ChangeOperation(BaseModel):
@@ -77,6 +91,7 @@ class ChangeOperation(BaseModel):
         "record_delete",
         "excel_import",
         "document_delete",
+        "controls_activation",
     ]
     project_code: str
     payload: dict[str, Any]

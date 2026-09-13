@@ -130,3 +130,31 @@ body{font-size:var(--font-body);line-height:1.55}.page-title h1{font-size:var(--
 @media(max-width:900px){.page-title{align-items:flex-start;flex-direction:column}.project-title-actions{width:100%;padding-top:0;justify-content:flex-start;flex-wrap:wrap}.assistant-project-select,.explorer-project-select{width:100%;max-width:none}.project-title-actions .explorer-project-select{flex-basis:100%}}
 @media(max-width:760px){:root{--font-page:27px}.project-title-actions .create-project-action{flex:1}.sidebar .brand,.sidebar.collapsed .brand{padding-left:0;padding-right:0;justify-content:center}.brand-mark{width:48px;height:48px}}
 @media(max-width:520px){.project-title-actions{display:grid;grid-template-columns:1fr}.project-title-actions .create-project-action{width:100%}.new-chat-action.primary{width:42px;padding:0;font-size:0}.smart-select-menu{width:max(100%,250px)}}
+
+/* Focused identity, import and dark-surface readability refinements. */
+.sidebar .role-identity{min-height:44px;padding:6px 8px;gap:8px;font-family:inherit;line-height:1.35}
+.sidebar .role-identity>span{min-width:0;flex:1}
+.sidebar .role-identity b{font-family:inherit;font-size:var(--font-secondary);font-weight:600}
+.sidebar .role-identity small{padding:0;font-family:inherit;font-size:var(--font-caption);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sidebar .role-identity.compact{padding:6px;min-height:36px}
+.portfolio-project-smart{width:100%;margin:14px 0}
+.portfolio-project-smart .smart-select-trigger{background:var(--surface);min-height:48px}
+.portfolio-project-smart .smart-select-menu{left:0;right:0;width:100%;min-width:0}
+.specialist-run-actions{margin-top:8px}
+:root[data-theme="dark"] .smart-select-trigger,
+:root[data-theme="dark"] .smart-select-menu button,
+:root[data-theme="dark"] .card,
+:root[data-theme="dark"] .manpower-workspace{color:#fff}
+:root[data-theme="dark"] .smart-select-value small,
+:root[data-theme="dark"] .smart-select-menu small,
+:root[data-theme="dark"] .manpower-workspace :is(label,th,small),
+:root[data-theme="dark"] .card :is(.card-title h2,.date-grid span,.hero-metrics span){color:#e2e8f0}
+:root[data-theme="dark"] .manpower-workspace :is(input,select,option,button){color:#fff}
+:root[data-theme="dark"] .manpower-workspace :is(input,select,option){background:var(--surface2)}
+:root[data-theme="dark"] .card .recharts-cartesian-axis-tick-value,
+:root[data-theme="dark"] .card .recharts-label,
+:root[data-theme="dark"] .card .recharts-pie-label-text{fill:#fff}
+:root[data-theme="dark"] .card .recharts-legend-item-text{color:#fff!important}
+:root[data-theme="dark"] .card .recharts-default-tooltip{background:var(--surface)!important;border-color:var(--line-strong)!important;color:#fff!important}
+:root[data-theme="dark"] .card .recharts-tooltip-label,
+:root[data-theme="dark"] .card .recharts-tooltip-item{color:#fff!important}

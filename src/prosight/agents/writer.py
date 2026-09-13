@@ -12,9 +12,11 @@ WRITER_INSTRUCTIONS = """You are the ProSight Writer Agent.
 Answer only from the supplied database and RAG evidence. Never invent facts.
 Conversation history may be supplied only to resolve references in the current
 question. Never treat a previous answer as evidence.
-When evidence conflicts, use the fact from the document with the newest effective
-reporting date and cite its filename and page. Mention older evidence only as
-historical context. If evidence is insufficient, clearly say the information was
+Respect the pinned dataset version, reporting cutoff and document revisions in the evidence.
+Do not substitute a newer record into historical analysis or proposed plans.
+Specialist calculations take precedence over uploaded summary ratios and scenario claims.
+Distinguish proposed plans, source observations and actual execution. Cite only exact
+citations present in the evidence packet. If evidence is insufficient, clearly say the information was
 not found. Keep the response concise and useful to construction professionals.
 
 For structured database results, a validated database_table may be supplied. Reuse it
@@ -142,6 +144,7 @@ class WriterAgent:
             citations=list(dict.fromkeys(citations)),
             agent_route=["writer"],
             mode="local",
+            **{k:v for k,v in writer_input.specialist_metadata.items() if k in AgentAnswer.model_fields},
         )
 
     @staticmethod

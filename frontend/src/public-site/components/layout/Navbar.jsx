@@ -56,7 +56,7 @@ export const Navbar = ({ activeTab, setActiveTab, onOpenGetStarted }) => {
           >
             <div className="relative flex items-center justify-center w-11 h-11 rounded-xl bg-gradient-to-br from-blue-600 via-cyan-600 to-indigo-700 p-0.5 shadow-lg shadow-cyan-500/20 group-hover:shadow-cyan-500/40 transition-all duration-300">
               <div className="w-full h-full bg-[#040d21] rounded-[10px] flex items-center justify-center relative overflow-hidden">
-                <img src="/prosight-logo-dark.png" alt="" className="w-full h-full object-contain rounded-[10px]" />
+                <img src="/prosight-logo-light.png" alt="" className="w-full h-full object-contain rounded-[10px]" />
               </div>
             </div>
             <div>

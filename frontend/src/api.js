@@ -1,5 +1,42 @@
 import { supabase } from "./supabase";
 
+export async function createImportBatch(project_code,dataset) {
+  return json(await apiFetch('/api/portfolio-import-batches',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_code,dataset})}),'Could not create import batch');
+}
+export async function addImportBatchFile(id,file) {
+  const body=new FormData();body.append('file',file);
+  return json(await apiFetch(`/api/portfolio-import-batches/${id}/files`,{method:'POST',body}),'File validation failed');
+}
+export async function validateImportBatch(id) {
+  return json(await apiFetch(`/api/portfolio-import-batches/${id}/validate`,{method:'POST'}),'Batch validation failed');
+}
+export async function submitImportBatch(id) {
+  return json(await apiFetch(`/api/portfolio-import-batches/${id}/submit`,{method:'POST'}),'Could not submit batch');
+}
+export async function getControlsVersion(code,id) {
+  return json(await apiFetch(`/api/projects/${code}/controls-versions/${id}`),'Could not load draft');
+}
+export async function getAgentRun(id) {
+  return json(await apiFetch(`/api/agent-runs/${id}`),'Could not retrieve run');
+}
+export async function cancelAgentRun(id) {
+  return json(await apiFetch(`/api/agent-runs/${id}/cancel`,{method:'POST'}),'Could not cancel run');
+}
+export async function editControlsVersion(code,id,tables) {
+  return json(await apiFetch(`/api/projects/${code}/controls-versions/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({tables})}),'Draft validation failed');
+}
+export async function submitControlsVersion(code,id) {
+  return json(await apiFetch(`/api/projects/${code}/controls-versions/${id}/submit`,{method:'POST'}),'Could not submit draft');
+}
+export async function downloadControlsVersion(code,id,format,runId=null) {
+  const urlPath=runId?`/api/agent-runs/${runId}/exports/${format}`:`/api/projects/${code}/controls-versions/${id}/exports/${format}`;
+  const artifact=await json(await apiFetch(urlPath,{method:'POST'}),'Could not prepare export');
+  const response=await apiFetch(`/api/artifacts/${artifact.id}/download`);
+  if(!response.ok)throw new Error('Artifact is unavailable or access has changed');
+  const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');
+  link.href=url;link.download=artifact.filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
 async function apiFetch(url, options = {}) {
   const { data: { session } } = await supabase.auth.getSession();
   const headers = new Headers(options.headers || {});
@@ -43,7 +80,7 @@ export async function askAgentStream(query, _userRole, projectCode = null, histo
   while(true){const {value,done}=await reader.read();buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
     const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";
     for(const block of blocks){const type=block.match(/^event:\s*(.+)$/m)?.[1],raw=block.match(/^data:\s*(.+)$/m)?.[1];
-      if(!type||!raw)continue;const payload=JSON.parse(raw);if(type==="status")handlers.onStatus?.(payload.label||"Thinking");
+      if(!type||!raw)continue;const payload=JSON.parse(raw);if(type==="status"){handlers.onStatus?.(payload.label||"Thinking");if(payload.run_id)handlers.onRun?.(payload.run_id)}
       if(type==="delta")handlers.onDelta?.(payload.text||"");
       if(type==="final")finalPayload=payload;if(type==="error")streamError=payload;}
     if(done)break;}

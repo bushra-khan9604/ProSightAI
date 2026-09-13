@@ -142,6 +142,9 @@ class PortfolioImportTests(unittest.TestCase):
             def select_all(self, table, **_filters):
                 return [{"emp_code": "EMP-001"}] if table == "manpower_assignments" else []
 
+            def select(self, table, **_filters):
+                return []  # This compatibility case has no active controls version.
+
             def request(self, method, path, payload, **_kwargs):
                 self.requests.append((method, path, payload))
                 return payload
