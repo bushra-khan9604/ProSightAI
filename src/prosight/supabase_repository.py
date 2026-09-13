@@ -73,7 +73,7 @@ class SupabaseProjectRepository:
         rows = self.user.rpc("list_authorized_projects", {
             "project_status": status.lower() if status else None,
         })
-        return [self._decorate(dict(self._decode_json(row["payload"])), user_role) for row in rows]
+        return [self._decorate(self._controls_project(dict(self._decode_json(row["payload"]))), user_role) for row in rows]
 
     def find_project(self, term: str, user_role: str = "employee") -> dict[str, Any] | None:
         value = term.strip()
@@ -82,7 +82,45 @@ class SupabaseProjectRepository:
         rows = self.user.rpc("find_authorized_project", {
             "search_term": value,
         })
-        return self._decorate(dict(self._decode_json(rows[0]["payload"])), user_role) if rows else None
+        return self._decorate(self._controls_project(dict(self._decode_json(rows[0]["payload"]))), user_role) if rows else None
+
+    def active_controls_version(self, project_code: str) -> dict[str, Any] | None:
+        rows = self.user.select("controls_versions", project_code=f"eq.{project_code}", status="eq.active", limit="1")
+        return rows[0] if rows else None
+
+    def _controls_project(self, project: dict[str, Any]) -> dict[str, Any]:
+        version = self.active_controls_version(project["code"])
+        if not version:
+            return project
+        tables = version["content"]
+        masters = tables.get("Project Master", [])
+        if masters:
+            project = {**project, **masters[0]}
+        project["controls_version_id"] = version["id"]
+        project["reporting_date"] = version["reporting_date"]
+        project["controls_readiness"] = version["validation"].get("readiness", {})
+        if tables.get("Schedule"):
+            project["revised_finish"] = max(a["forecast_finish"] for a in tables["Schedule"])
+        if version["validation"].get("readiness", {}).get("evm"):
+            from .controls.calculations import evm
+            values = evm(tables["Cost Baseline"], tables["Budget Periods"], tables.get("Measurements", []), tables.get("Actual Costs", []), version["reporting_date"], future=project["status"] == "future")
+            if values["bac_usd"]:
+                project["baseline_progress"] = 100*values["pv_usd"]/values["bac_usd"]
+                project["actual_progress"] = 100*(values["ev_usd"] or 0)/values["bac_usd"]
+        if "Current Manpower" in tables:
+            counts = {}
+            for row in tables["Current Manpower"]:
+                counts[row["designation"]] = counts.get(row["designation"], 0) + 1
+            project["manpower"] = [{"designation": name, "count": count} for name,count in counts.items()]
+        return project
+
+    def _controls_rows(self, section, legacy, project_code=None, project_field="project_code"):
+        filters = {"status": "eq.active"}
+        if project_code:
+            filters["project_code"] = f"eq.{project_code}"
+        versions = self.user.select_all("controls_versions", **filters)
+        managed = {v["project_code"] for v in versions if section in v["content"]}
+        return [r for r in legacy if r.get(project_field) not in managed] + [r for v in versions if section in v["content"] for r in v["content"][section]]
 
     def portfolio_summary(self, user_role: str = "employee") -> dict[str, Any]:
         projects = self.list_projects(user_role=user_role)
@@ -101,6 +139,12 @@ class SupabaseProjectRepository:
         if not before:
             raise KeyError("Project not found")
         after = {**before, **updates, "code": project_code}
+        if self.active_controls_version(project_code):
+            from .controls.store import ControlsStore
+            store=ControlsStore(self)
+            version=store.stage(project_code,[{'tables':{'Project Master':[after]},'metadata':{},'filename':'Project form edit','sources':[]}])
+            change=store.submit(project_code,version['id'])
+            return {**before,'pending_controls_change':change}
         for calculated in ("delay_days", "variance_pct"):
             after.pop(calculated, None)
         self.user.update(
@@ -281,6 +325,14 @@ class SupabaseProjectRepository:
     def create_change_request(self, action: str, project_code: str, payload: dict[str, Any],
                               preview: dict[str, Any], requested_by: str) -> dict[str, Any]:
         actor_id, role = self._actor()
+        if action=='excel_import' and self.active_controls_version(project_code):
+            projects=payload.get('projects',[])
+            if len(projects)!=1 or projects[0]['code']!=project_code:
+                raise ValueError('Version-managed project workbooks must be imported separately')
+            from .controls.store import ControlsStore
+            store=ControlsStore(self)
+            version=store.stage(project_code,[{'tables':{'Project Master':projects},'metadata':{},'filename':'Canonical workbook import','sources':[]}])
+            return store.submit(project_code,version['id'])
         change = self.db.insert("change_requests", {
             "id": str(uuid.uuid4()), "action": action, "project_code": project_code,
             "payload": payload, "preview": preview, "status": "pending",
@@ -362,6 +414,9 @@ class SupabaseProjectRepository:
         change = self.get_change_request(change_id)
         if not change:
             raise KeyError("Change request not found")
+        if change["action"] == "controls_activation":
+            from .controls.store import ControlsStore
+            return ControlsStore(self).decide(change_id, decision == "approved")
         if change["status"] != "pending":
             raise ValueError("Change request has already been decided")
         if decision == "approved":
@@ -411,6 +466,8 @@ class SupabaseProjectRepository:
 
     def _apply_change(self, change: dict[str, Any]) -> None:
         action, payload, code = change["action"], change["payload"], change["project_code"]
+        if action in {'excel_import','contact_update','activity_import','resource_import','milestone_update'} and self.active_controls_version(code):
+            raise ValueError('This project now uses versioned controls. Re-submit this legacy change through Portfolio Import for version review.')
         if action == "excel_import":
             for project in payload.get("projects", []):
                 self.service.insert("projects", self._project_row(project), upsert=True)
@@ -523,6 +580,19 @@ class SupabaseProjectRepository:
         return self.get_portfolio_import(import_id) or {}
 
     def apply_portfolio_import(self, import_id: str, parsed: dict[str, Any]) -> dict[str, Any]:
+        project_codes = {r.get("project_code",r.get("current_project_code")) for key in ("manpower","invoices","schedule") for r in parsed.get(key,[])}
+        managed = {code for code in project_codes if self.active_controls_version(code)}
+        if managed:
+            if len(project_codes) != 1:
+                raise ValueError("Version-managed projects must be imported separately through Mixed Project Files")
+            from .controls.store import ControlsStore
+            tables = {name:parsed[key] for key,name in (("manpower","Current Manpower"),("invoices","Invoices"),("schedule","Basic Schedule")) if parsed.get(key)}
+            store = ControlsStore(self)
+            version = store.stage(next(iter(managed)),[{"tables":tables,"metadata":{},"filename":"Legacy portfolio import","sources":[]}])
+            change = store.submit(next(iter(managed)),version["id"])
+            summary = {"status":"pending_approval","version_id":version["id"],"change_request_id":change["id"]}
+            self.service.update("portfolio_imports",{"status":"completed","summary_json":summary,"completed_at":self._now()},id=f"eq.{import_id}")
+            return {**(self.get_portfolio_import(import_id) or {}),"controls_approval":summary}
         counts: dict[str, dict[str, int]] = {}
         now = self._now()
         for key, table, conflict, columns, key_columns in (
@@ -597,7 +667,10 @@ class SupabaseProjectRepository:
             item = dict(self._decode_json(source.get("data_json")) or {})
             item.update({column: source.get(column) for column in MANPOWER_DB_COLUMNS})
             results.append(item)
-        return results
+        results = self._controls_rows("Current Manpower", results, project_code, "current_project_code")
+        return [r for r in results if all(not value or r.get(field) == value for field,value in (
+            ("department",department),("category",category),("status",status),("current_location",location)))
+            and (not search or search.casefold() in (str(r.get("name", ""))+str(r.get("emp_code", ""))).casefold())]
 
     def list_invoices(self, project_code: str | None = None, status: str | None = None,
                       level: str | None = None, approval_status: str | None = None,
@@ -620,10 +693,14 @@ class SupabaseProjectRepository:
             item["live_days_to_remittance"] = ProjectRepository._days_until(item.get("expected_remittance_date"), date.today())
             if minimum_aging_days is None or (item["live_aging_days"] is not None and item["live_aging_days"] >= minimum_aging_days):
                 results.append(item)
-        return results
+        results = [with_invoice_legacy_aliases(r) for r in self._controls_rows("Invoices", results, project_code)]
+        return [r for r in results if all(not value or r.get(field) == value for field,value in (
+            ("status",status),("levels",level),("approval_status",approval_status),("payment_status",payment_status),("risk_profile",risk_profile)))
+            and (not date_from or (r.get("submission_date") or "") >= date_from)
+            and (not date_to or (r.get("submission_date") or "") <= date_to)]
 
     def invoice_pivot(self) -> list[dict[str, Any]]:
-        rows = self.db.select("project_invoices", select="levels,status,project_code,invoice_value_usd")
+        rows = self.list_invoices()
         grouped: dict[tuple[str, str], dict[str, float]] = {}
         for row in rows:
             key = (row.get("levels") or "", row.get("status") or "")
@@ -633,6 +710,14 @@ class SupabaseProjectRepository:
                  "grand_total": round(sum(values.values()), 2)} for key, values in sorted(grouped.items())]
 
     def list_project_schedule(self, project_code: str) -> list[dict[str, Any]]:
+        version = self.active_controls_version(project_code)
+        if version:
+            if "Schedule" in version["content"]:
+                return [{"project_code":project_code,"activity_id":r["activity_id"],"activity_name":r["name"],
+                         "start":r["forecast_start"],"finish":r["forecast_finish"],"original_duration":r["duration_wd"],
+                         "dataset_version":version["id"]} for r in version["content"]["Schedule"]]
+            if "Basic Schedule" in version["content"]:
+                return version["content"]["Basic Schedule"]
         rows = self.db.select("project_schedule_activities", project_code=f"eq.{project_code}", order="start_date.asc")
         return [{"project_code": row["project_code"], "activity_id": row["activity_id"],
                  "activity_name": row["activity_name"], "start": row["start_date"],

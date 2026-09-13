@@ -16,8 +16,12 @@ import {
   getPortfolioManpower, getProjectIngestionJobs, getProjects, markAllNotificationsRead,
   downloadPortfolioTemplate, markNotificationRead, portfolioTemplateUrl, updateProject, updateProjectImport,
   uploadPortfolioWorkbook, uploadProjectFile,
+
 } from "./api";
+import {formatProgress} from "./formatProgress";
+import {useSpecialistRuns,answerFields} from "./useSpecialistRuns";
 import ManpowerDashboard from "./ManpowerDashboard";
+import {BatchImport,ControlsResult} from "./ControlsReview";
 
 const roles = {
   Employee: "employee",
@@ -34,7 +38,6 @@ function SmartSelect({ label, value, options, onChange, icon: Icon, className=""
   const selected=options[selectedIndex]||options[0];
   useEffect(()=>{
     if(!open)return;
-    setActiveIndex(selectedIndex);
     const closeOutside=event=>{if(rootRef.current&&!rootRef.current.contains(event.target))setOpen(false)};
     const closeEscape=event=>{if(event.key==="Escape"){setOpen(false);triggerRef.current?.focus()}};
     document.addEventListener("pointerdown",closeOutside,true);document.addEventListener("keydown",closeEscape);
@@ -45,7 +48,7 @@ function SmartSelect({ label, value, options, onChange, icon: Icon, className=""
     if(["ArrowDown","ArrowUp","Home","End","Enter"," ","Escape"].includes(event.key))event.preventDefault();
     if(event.key==="Escape"){setOpen(false);return}
     if(event.key==="Enter"||event.key===" "){
-      if(open)choose(options[activeIndex]);else setOpen(true);
+      if(open&&options[activeIndex])choose(options[activeIndex]);else {setActiveIndex(selectedIndex);setOpen(true);}
       return;
     }
     if(event.key==="Home"){setOpen(true);setActiveIndex(0);return}
@@ -58,7 +61,7 @@ function SmartSelect({ label, value, options, onChange, icon: Icon, className=""
     <button type="button" className="smart-select-trigger" ref={triggerRef} disabled={disabled}
       role="combobox" aria-label={label||"Select an option"} aria-haspopup="listbox" aria-expanded={open}
       aria-controls={open?`${className}-options`:undefined} aria-activedescendant={open?`${className}-option-${activeIndex}`:undefined}
-      onClick={()=>setOpen(current=>!current)} onKeyDown={onKeyDown}>
+      onClick={()=>{if(!open)setActiveIndex(selectedIndex);setOpen(current=>!current)}} onKeyDown={onKeyDown}>
       {Icon&&<Icon size={17}/>}<span className="smart-select-value"><b>{selected?.label}</b>{selected?.description&&<small>{selected.description}</small>}</span>
       <ChevronDown className="select-chevron" size={16}/>
     </button>
@@ -75,6 +78,7 @@ function SmartSelect({ label, value, options, onChange, icon: Icon, className=""
 const nav = [
   ["assistant", "AI Assistant", Bot],
   ["dashboard", "Command Center", LayoutDashboard],
+  ["manpower", "Manpower Dashboard", Users],
   ["projects", "Project Explorer", Building2],
 ];
 const money = (value) =>
@@ -147,11 +151,11 @@ function Status({ project }) {
 function Sidebar({ page, setPage, collapsed, setCollapsed, dark, setDark, role, profile, onSignOut, refreshProjects, onActivityCleared }) {
   return <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="brand">
-      <div className="brand-mark"><img src={dark ? "/prosight-logo-dark.svg" : "/prosight-logo.svg"} alt="ProSight AI construction intelligence"/></div>
+      <div className="brand-mark"><img src="/prosight-logo-light.png" alt="ProSight AI construction intelligence"/></div>
       {!collapsed && <div><strong>ProSight AI</strong><small>Construction intelligence</small></div>}
     </div>
     <nav>{nav.map(([id, label, Icon]) =>
-      <button key={id} className={page === id ? "active" : ""} onClick={() => setPage(id)}>
+      <button key={id} aria-label={label} title={label} className={page === id ? "active" : ""} onClick={() => setPage(id)}>
         <Icon size={19}/>{!collapsed && <span>{label}</span>}
       </button>)}
     </nav>
@@ -211,8 +215,8 @@ function SidebarUtilities({ dark, setDark, role, profile, onSignOut, refreshProj
     try{await markAllNotificationsRead(roleKey);await refreshCenter()}catch(err){setError(err.message)}
   }
   return <div className="sidebar-utilities">
-    <div className={`role-identity ${collapsed?"compact":""}`} title={`${profile?.email||"Signed in"} · ${role}`}>
-      <Users size={17}/>{!collapsed&&<span><b>{profile?.display_name||profile?.email||"Signed in"}</b><small>{role}</small></span>}
+    <div className={`role-identity ${collapsed?"compact":""}`} title={`${profile?.display_name||profile?.email||"Signed in"} · ${role}`}>
+      <Users size={16}/>{!collapsed&&<span><b>{profile?.display_name||profile?.email||"Signed in"}</b><small>{role}</small></span>}
     </div>
     <div className="utility-actions">
       <div className="notification-center" ref={centerRef}>
@@ -260,9 +264,8 @@ function Kpi({ icon: Icon, label, value, detail, tone }) {
 }
 
 /** Executive command center assembled from authorized project records. */
-function Dashboard({ projects, goToAssistant, goToProjects }) {
+function Dashboard({ projects, goToAssistant, goToManpower }) {
   const [scheduleRange,setScheduleRange]=useState(6),[rangeOpen,setRangeOpen]=useState(false);
-  const [manpowerOpen,setManpowerOpen]=useState(false);
   const rangeRef=useRef(null);
   useEffect(()=>{
     if(!rangeOpen)return;
@@ -288,14 +291,13 @@ function Dashboard({ projects, goToAssistant, goToProjects }) {
     { month: "Jun", Revised: 67, Actual: 63 }, { month: "Jul", Revised: 72, Actual: 68.5 },
   ];
   const risk = [...delayed].sort((a, b) => a.variance_pct - b.variance_pct)[0];
-  if(manpowerOpen)return <ManpowerDashboard projects={projects} onBack={()=>setManpowerOpen(false)} onOpenImport={goToProjects}/>;
   return <>
     <PageTitle eyebrow="Portfolio overview" title="Project Command Center"
       subtitle="A live view of portfolio health, delivery performance, and emerging risks."/>
     <section className="kpi-grid">
       <Kpi icon={BriefcaseBusiness} label="Active projects" value={active.length} detail="Current delivery portfolio" tone="blue"/>
       <Kpi icon={CircleDollarSign} label="Contract value" value={`$${(active.reduce((s,p)=>s+p.contract_value_usd,0)/1e6).toFixed(1)}M`} detail="Across active projects" tone="green"/>
-      <Kpi icon={Activity} label="Average progress" value={`${avg.toFixed(1)}%`} detail="Actual portfolio progress" tone="purple"/>
+      <Kpi icon={Activity} label="Average progress" value={formatProgress(avg)} detail="Actual portfolio progress" tone="purple"/>
       <Kpi icon={Clock3} label="Delayed projects" value={delayed.length} detail="Require schedule attention" tone="red"/>
     </section>
     <section className="dashboard-grid">
@@ -304,7 +306,7 @@ function Dashboard({ projects, goToAssistant, goToProjects }) {
         <div className="health-head"><span>Project</span><span>Progress</span><span>Status</span></div>
         {active.map((p) => <div className="health-row" key={p.code}>
           <div><strong>{p.name}</strong><small>{p.code}</small></div>
-          <div className="progress-wrap"><div className="progress"><i style={{width:`${p.actual_progress}%`}}/></div><b>{p.actual_progress}%</b></div>
+          <div className="progress-wrap"><div className="progress"><i style={{width:`${p.actual_progress}%`}}/></div><b>{formatProgress(p.actual_progress)}</b></div>
           <Status project={p}/>
         </div>)}
       </article>
@@ -322,7 +324,7 @@ function Dashboard({ projects, goToAssistant, goToProjects }) {
         </div></div>
         <ResponsiveContainer width="100%" height={260}>
           <LineChart data={trend.slice(-scheduleRange)}><CartesianGrid strokeDasharray="3 3" vertical={false}/>
-            <XAxis dataKey="month"/><YAxis domain={[0, 100]} unit="%"/><Tooltip/>
+            <XAxis dataKey="month"/><YAxis domain={[0, 100]} tickFormatter={value=>formatProgress(value)}/><Tooltip formatter={value=>formatProgress(value)}/>
             <Line dataKey="Revised" stroke="var(--chart-secondary)" strokeWidth={3} dot={false}/>
             <Line dataKey="Actual" stroke="var(--chart-primary)" strokeWidth={3} dot={{r:3}}/>
           </LineChart>
@@ -330,9 +332,9 @@ function Dashboard({ projects, goToAssistant, goToProjects }) {
       </article>
       <article className="card insight-panel">
         <div className="spark"><Bot size={18}/> AI insight</div>
-        {risk ? <><h3>{risk.name}</h3><p>Actual progress is <b>{Math.abs(risk.variance_pct)} points behind</b> the revised plan, with a {risk.delay_days}-day completion delay.</p>
-          <div className="insight-stat"><span>Actual</span><strong>{risk.actual_progress}%</strong></div>
-          <div className="insight-stat"><span>Revised</span><strong>{risk.revised_progress}%</strong></div>
+        {risk ? <><h3>{risk.name}</h3><p>Actual progress is <b>{formatProgress(Math.abs(risk.variance_pct),"")} points behind</b> the revised plan, with a {risk.delay_days}-day completion delay.</p>
+          <div className="insight-stat"><span>Actual</span><strong>{formatProgress(risk.actual_progress)}</strong></div>
+          <div className="insight-stat"><span>Revised</span><strong>{formatProgress(risk.revised_progress)}</strong></div>
           <button className="primary wide" onClick={() => goToAssistant(`Explain the progress and delay for ${risk.code}`)}>View full analysis <ChevronRight size={16}/></button>
         </> : <p>No schedule risks detected.</p>}
       </article>
@@ -340,8 +342,8 @@ function Dashboard({ projects, goToAssistant, goToProjects }) {
     <section className="lower-grid">
       <article className="card"><CardTitle title="Progress by project"/>
         <ResponsiveContainer width="100%" height={220}><BarChart data={progress} layout="vertical">
-          <CartesianGrid strokeDasharray="3 3" horizontal={false}/><XAxis type="number" domain={[0,100]}/>
-          <YAxis dataKey="name" type="category" width={105}/><Tooltip/><Legend/>
+          <CartesianGrid strokeDasharray="3 3" horizontal={false}/><XAxis type="number" domain={[0,100]} tickFormatter={value=>formatProgress(value)}/>
+          <YAxis dataKey="name" type="category" width={105}/><Tooltip formatter={value=>formatProgress(value)}/><Legend/>
           <Bar dataKey="Baseline" fill="var(--chart-muted)" radius={4}/><Bar dataKey="Revised" fill="var(--chart-secondary)" radius={4}/><Bar dataKey="Actual" fill="var(--chart-primary)" radius={4}/>
         </BarChart></ResponsiveContainer>
       </article>
@@ -350,7 +352,7 @@ function Dashboard({ projects, goToAssistant, goToProjects }) {
           <div className="timeline-item" key={`${m.name}${i}`}><i/><div><strong>{m.name}</strong><small>{m.project}</small></div><span>{m.status.replace("due ","")}</span></div>)}</div>
       </article>
     </section>
-    <button className="card command-action-card" onClick={()=>setManpowerOpen(true)}>
+    <button className="card command-action-card" onClick={goToManpower}>
       <i><Users size={24}/></i><span><b>Manpower Allocation Dashboard</b><small>Explore workforce distribution, exceptions, and temporary allocation scenarios.</small></span>
       <em>Open dashboard <ChevronRight size={16}/></em>
     </button>
@@ -388,7 +390,18 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
     if(tab==="invoice pivot")getInvoicePivot(roleKey).then(setPivot).catch(()=>setPivot([]));
     if(tab==="project schedule")getProjectSchedule(roleKey,project.code).then(setSchedule).catch(()=>setSchedule([]));
   },[tab,project?.code,roleKey,portfolioRevision]);
-  if (!project) return null;
+  if (!project) return <>
+    <PageTitle eyebrow="Project controls" title="Project Explorer" subtitle="Inspect schedules, teams, site operations, and supporting evidence."/>
+    <section className="card">
+      <h2>No projects available</h2>
+      <p>{["project_manager","admin"].includes(roleKey)
+        ? "Create your first project or import its Project Master workbook to get started."
+        : "No projects are assigned to your account. Ask your administrator to create a project or grant you access."}</p>
+      {["project_manager","admin"].includes(roleKey)&&<button className="primary create-project-action" onClick={()=>setCreateOpen(true)}><Plus size={16}/> Create Project</button>}
+    </section>
+    <UploadCenter open={createOpen} workspaceMode="create" onClose={()=>setCreateOpen(false)}
+      role={role} projects={projects} selectedProject="" setSelectedProject={setSelected} refreshProjects={refreshProjects}/>
+  </>;
   const manpower = project.manpower.map((m)=>({name:m.designation,value:m.count}));
   return <>
     <PageTitle eyebrow="Project controls" title="Project Explorer" subtitle="Inspect schedules, teams, site operations, and supporting evidence.">
@@ -404,8 +417,8 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
     <section className="project-hero card">
       <div><span className="status success">{project.status}</span><h2>{project.name}</h2><p>{project.location} · {project.client}</p></div>
       <div className="hero-metrics"><div><span>Contract value</span><strong>{money(project.contract_value_usd)}</strong></div>
-        <div><span>Actual progress</span><strong>{project.actual_progress}%</strong></div>
-        <div><span>Variance</span><strong className={project.variance_pct<0?"negative":""}>{project.variance_pct>0?"+":""}{project.variance_pct} pp</strong></div>
+        <div><span>Actual progress</span><strong>{formatProgress(project.actual_progress)}</strong></div>
+        <div><span>Variance</span><strong className={project.variance_pct<0?"negative":""}>{formatProgress(project.variance_pct," pp",true)}</strong></div>
         <div><span>Delay</span><strong>{project.delay_days} days</strong></div></div>
     </section>
     <div className="tabs">{["overview","contacts","operations","milestones","project schedule","portfolio manpower","project invoices","invoice pivot","update project"].filter(item=>item!=="update project"||roleKey!=="employee").map((item)=>
@@ -417,7 +430,7 @@ function ProjectExplorer({ projects, role, refreshProjects, dataRevision, select
         <div><span>Revised finish</span><strong>{project.revised_finish||"Not set"}</strong></div></div>
         <ResponsiveContainer width="100%" height={230}><BarChart data={[
           {name:"Baseline",value:project.baseline_progress},{name:"Revised",value:project.revised_progress},{name:"Actual",value:project.actual_progress}]}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name"/><YAxis domain={[0,100]}/><Tooltip/>
+          <CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name"/><YAxis domain={[0,100]} tickFormatter={value=>formatProgress(value)}/><Tooltip formatter={value=>formatProgress(value)}/>
           <Bar dataKey="value" radius={[7,7,0,0]}>{["#94a3b8","#60a5fa","#2563eb"].map(c=><Cell fill={c} key={c}/>)}</Bar>
         </BarChart></ResponsiveContainer></article>
       <article className="card"><CardTitle title="Evidence"/>{project.sources.map(s=><div className="evidence" key={s}><BookOpen size={16}/><span>{s}</span></div>)}</article>
@@ -499,8 +512,16 @@ function PortfolioImport({open,onClose,roleKey,onImported,projects,selectedProje
     {dataset:"manpower",title:"Manpower",description:"Employee allocation and project assignment data"},
     {dataset:"invoices",title:"Project Invoices",description:"Invoice, payment, aging and risk data"},
     {dataset:"schedule",title:"Project Schedule",description:"Project activities, dates and original durations"},
+    {dataset:"master",title:"Project Master",description:"Canonical project identity and summary workbook"},
+    {dataset:"planning",title:"Planning Inputs",description:"Scope, resources, calendars and commercial assumptions"},
+    {dataset:"controls",title:"Project Controls",description:"Versioned schedule, costs, measurements and registers"},
+    {dataset:"benchmarks",title:"Historical Benchmarks",description:"Completed-project productivity and procurement evidence"},
+    {dataset:"shared",title:"Shared Resource Scenarios",description:"Authorized project demands and portfolio capacity"},
+    {dataset:"documents",title:"Project Documents",description:"Searchable PDFs with individual approval and ingestion"},
+    {dataset:"mixed",title:"Mixed Project Files",description:"Validate related XLSX and PDF files together"},
   ];
   const item=options.find(option=>option.dataset===dataset)||options[0];
+  const extended=!["manpower","invoices","schedule"].includes(dataset);
   const datasetOptions=options.map(option=>({value:option.dataset,label:option.title,description:option.description}));
   function selectDataset(value){setDataset(value);setFeedback(null);setSelectedFile("")}
   if(!open||roleKey==="employee")return null;
@@ -508,25 +529,26 @@ function PortfolioImport({open,onClose,roleKey,onImported,projects,selectedProje
     <aside className={`upload-center portfolio-import ${loading?"is-loading":""}`} role="dialog" aria-modal="true" aria-label="Portfolio Data Import">
       <div className="upload-head"><div><span>PORTFOLIO CONTROLS</span><h2>Portfolio Data Import</h2></div>
         <button disabled={loading} onClick={onClose}><X/></button></div>
-      <p className="portfolio-help">Choose one portfolio dataset, download its template, then upload the completed XLSX workbook.</p>
+      <p className="portfolio-help">Choose a dataset. Use Mixed Project Files to validate related workbooks and PDFs together before approval.</p>
       <SmartSelect className="portfolio-dataset-smart" label="Data to import" Icon={FileSpreadsheet}
         value={dataset} options={datasetOptions} disabled={loading} onChange={selectDataset}/>
+      {extended?<><SmartSelect className="portfolio-project-smart" label="Target project" icon={Building2} value={scheduleProject} disabled={loading||!projects.length} onChange={setScheduleProject} options={[{value:"",label:"Select a project"},...projects.map(project=>({value:project.code,label:project.code,description:project.name}))]}/>
+        <BatchImport key={`${dataset}-${scheduleProject}`} project={scheduleProject} dataset={dataset} onImported={onImported}/></>:
       <div className="portfolio-upload-grid"><section className={`portfolio-upload-option ${activeDataset===item.dataset?"active":""}`}>
         <div className="portfolio-card-heading"><i><FileSpreadsheet size={20}/></i><div><h3>{item.title}</h3><p>{item.description}</p></div></div>
         <a className="template-download" href={portfolioTemplateUrl(roleKey,item.dataset)} aria-disabled={loading}
           tabIndex={loading?-1:0} onClick={event=>{event.preventDefault();if(!loading)downloadPortfolioTemplate(roleKey,item.dataset)
             .catch(error=>setFeedback({type:"error",message:error.message}))}}><FileSpreadsheet size={17}/><span>Download {item.title} template</span></a>
         <div className="upload-divider"><span>Then upload completed workbook</span></div>
-        {item.dataset==="schedule"&&<label className="schedule-project-select"><span>Target project</span><select value={scheduleProject} disabled={loading} onChange={event=>setScheduleProject(event.target.value)}>
-          {projects.map(project=><option value={project.code} key={project.code}>{project.code} — {project.name}</option>)}</select></label>}
+        {item.dataset==="schedule"&&<SmartSelect className="portfolio-project-smart" label="Target project" icon={Building2} value={scheduleProject} disabled={loading||!projects.length} onChange={setScheduleProject} options={[{value:"",label:"Select a project"},...projects.map(project=>({value:project.code,label:project.code,description:project.name}))]}/>}
         <label className="drop-zone"><Upload size={25}/><b>{activeDataset===item.dataset?"Validating and importing…":`Upload ${item.title} XLSX`}</b>
           <span>XLSX only · Maximum file size 20 MB</span><input className="accessible-file-input" disabled={loading} type="file" accept=".xlsx" onChange={event=>upload(event.target.files[0],item.dataset)}/>
           <small className="selected-upload-name">{selectedFile||"No file selected"}</small></label>
         {feedback?.type==="error"&&<div className="portfolio-card-feedback error"><b>Import failed</b><span>{feedback.message}</span></div>}
-        {feedback?.type==="success"&&<div className="portfolio-card-feedback success"><b>Import completed</b><span>{
-          `${feedback.result.summary?.[item.dataset]?.inserted||0} inserted, ${feedback.result.summary?.[item.dataset]?.updated||0} updated`
+        {feedback?.type==="success"&&<div className="portfolio-card-feedback success"><b>{feedback.result.controls_approval?"Submitted for approval":"Import completed"}</b><span>{
+          feedback.result.controls_approval?"The active dataset remains in use until Admin approval.":`${feedback.result.summary?.[item.dataset]?.inserted||0} inserted, ${feedback.result.summary?.[item.dataset]?.updated||0} updated`
         }</span></div>}
-      </section></div>
+      </section></div>}
       {loading&&<progress className="portfolio-progress" max="100"/>}
     </aside>
   </div>;
@@ -651,7 +673,8 @@ function UploadCenter({ open, onClose=()=>{}, role, projects, selectedProject, s
       const normalized={...draft,contract_value_usd:Number(draft.contract_value_usd)};
       if(formMode==="update"){
         const {code,...update}=normalized;
-        await updateProject(code,update,roleKey);
+        const result=await updateProject(code,update,roleKey);
+        if(result.pending_controls_change)setError('Submitted for Admin approval. The active project version remains in use.');
         await refreshProjects();
         return;
       }
@@ -782,6 +805,7 @@ function LegacyAssistant({ role, projects, initialQuery, clearInitial, messages,
       .slice(-10).map(({role,content})=>({role,content}));
     try{const result=await askAgent(text,roles[role],selectedProject||null,history);
       console.info("prosight.response_rendered",{request_id:result.request_id,provider:result.mode,duration_ms:result.duration_ms});
+      if(result.run_id)sessionStorage.removeItem('prosight-pending-run');
       setMessages(m=>[...m,{role:"assistant",content:result.answer,citations:result.citations,route:result.agent_route,mode:result.mode,notice:result.notice,requestId:result.request_id,durationMs:result.duration_ms}]);}
     catch(error){console.error("prosight.client_error",{request_id:error.requestId||null,error_type:error.name});
       setMessages(m=>[...m,{role:"assistant",content:`I could not reach the ProSight service. Reference: ${error.requestId||"not available"}.`,error:true}]);}
@@ -809,7 +833,7 @@ function LegacyAssistant({ role, projects, initialQuery, clearInitial, messages,
 }
 
 /** Executive workspace for conversational portfolio intelligence. */
-function Assistant({ role, projects, initialQuery, clearInitial, messages, setMessages, clearMessages, selectedProject, setSelectedProject }) {
+function Assistant({ runOwner, role, projects, initialQuery, clearInitial, messages, setMessages, clearMessages, selectedProject, setSelectedProject }) {
   const [query,setQuery]=useState(initialQuery||"");
   const [loading,setLoading]=useState(false);
   const messagesRef=useRef(null),forceScrollRef=useRef(false);
@@ -823,6 +847,7 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
       forceScrollRef.current=false;
     }
   },[messages,loading]);
+  const runs=useSpecialistRuns(runOwner,setMessages);
   async function submit(text=query){
     if(!text.trim()||loading)return;
     console.info("prosight.query_submitted",{query_length:text.trim().length,role:roles[role]});
@@ -832,14 +857,15 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
     setQuery("");setLoading(true);
     const history=messages.filter(message=>["user","assistant"].includes(message.role)&&!message.error&&!message.intro)
       .slice(-10).map(({role:messageRole,content})=>({role:messageRole,content}));
-    let streamedText="",renderTimer=null;
+    let streamedText="",renderTimer=null,runId=null;
     const flushStream=()=>{
       renderTimer=null;
-      setMessages(current=>current.map(message=>message.id===assistantId?{...message,content:streamedText}:message));
+      if(!runs.isTerminal(assistantId))setMessages(current=>current.map(message=>message.id===assistantId?{...message,content:streamedText}:message));
     };
     try{
       const result=await askAgentStream(text,roles[role],selectedProject||null,history,{
-        onStatus:status=>setMessages(current=>current.map(message=>message.id===assistantId?{...message,status}:message)),
+        onRun:id=>{runId=id;runs.register(assistantId,id,text)},
+        onStatus:status=>{if(!runs.isTerminal(assistantId))setMessages(current=>current.map(message=>message.id===assistantId?{...message,status}:message))},
         onDelta:delta=>{
           streamedText+=delta;
           if(!renderTimer)renderTimer=setTimeout(flushStream,40);
@@ -847,15 +873,18 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
       });
       if(renderTimer){clearTimeout(renderTimer);renderTimer=null;}
       console.info("prosight.response_rendered",{request_id:result.request_id,provider:result.mode,duration_ms:result.duration_ms});
-      setMessages(current=>current.map(message=>message.id===assistantId?{...message,pending:false,content:result.answer,citations:result.citations,
-        status:null,route:result.agent_route,mode:result.mode,notice:result.notice,requestId:result.request_id,durationMs:result.duration_ms,
-        timeToFirstTokenMs:result.time_to_first_token_ms}:message));
+      if(!runs.isTerminal(assistantId)){
+        if(runId&&!result.dataset_version)runs.recover(assistantId);
+        else if(runId)runs.complete(assistantId,result);
+        else setMessages(current=>current.map(message=>message.id===assistantId?{...message,...answerFields(result)}:message));
+      }
     }catch(error){
       if(renderTimer){clearTimeout(renderTimer);renderTimer=null;}
       console.error("prosight.client_error",{request_id:error.requestId||null,error_type:error.name});
-      setMessages(current=>current.map(message=>message.id===assistantId?{...message,pending:false,status:null,error:true,
+      if(runId&&!runs.isTerminal(assistantId))runs.recover(assistantId);
+      else if(!runs.isTerminal(assistantId))setMessages(current=>current.map(message=>message.id===assistantId?{...message,pending:false,status:null,error:true,
         content:error.partial&&streamedText?streamedText:`I could not reach the ProSight service. Reference: ${error.requestId||"not available"}.`,
-        notice:error.partial?"This response was interrupted before completion.":null,retryQuery:error.partial?text:null}:message));
+        notice:error.partial?"This response was interrupted before completion.":null,retryQuery:text}:message));
     }finally{setLoading(false);}
   }
   const selected=projects.find(project=>project.code===selectedProject);
@@ -907,7 +936,13 @@ function Assistant({ role, projects, initialQuery, clearInitial, messages, setMe
               </div></details>}
             {message.citations?.length>0&&<details className="source-details"><summary>Sources used <span>{message.citations.length}</span></summary>
               {message.citations.map(citation=><span key={citation}>{citation}</span>)}</details>}
-            {message.retryQuery&&<button className="new-chat-action" onClick={()=>submit(message.retryQuery)}>Retry response</button>}
+            {message.controlsVersion&&<ControlsResult code={message.controlsProject} versionId={message.controlsVersion} draftId={message.draftId} runId={message.runId}/>}
+            {message.runId&&['running','queued','reconnecting','disconnected'].includes(message.runState)&&<div className="controls-actions specialist-run-actions">
+              {message.runState==='disconnected'
+                ?<button className="new-chat-action" onClick={()=>runs.recover(message.id)}>Check status</button>
+                :<button className="new-chat-action" disabled={message.cancelBusy} onClick={()=>runs.cancel(message.id)}>{message.cancelBusy?'Cancelling…':'Cancel'}</button>}
+            </div>}
+            {message.retryQuery&&<button className="new-chat-action" disabled={loading} onClick={()=>submit(message.retryQuery)}>Retry</button>}
           </div>
         </div>)}
       </div>
@@ -953,11 +988,12 @@ export default function App({profile,onSignOut}){
     role={role} profile={profile} onSignOut={onSignOut}/><div className="main-shell">
     <main className={loading?"loading":""}>
       {loading?<div className="loader"><i/></div>:<>
-      {page==="dashboard"&&<Dashboard projects={projects} goToAssistant={goToAssistant} goToProjects={()=>setPage("projects")}/>}
+      {page==="dashboard"&&<Dashboard projects={projects} goToAssistant={goToAssistant} goToManpower={()=>setPage("manpower")}/>}
+      {page==="manpower"&&<ManpowerDashboard projects={projects} onBack={()=>setPage("dashboard")} onOpenImport={()=>setPage("projects")}/>}
       {page==="projects"&&<ProjectExplorer projects={projects} role={role}
         refreshProjects={refreshProjects} dataRevision={dataRevision}
         selectedProject={explorerProject} setSelectedProject={setExplorerProject}/>}
-      {page==="assistant"&&<Assistant role={role} projects={projects} initialQuery={initialQuery} clearInitial={()=>setInitialQuery("")}
+      {page==="assistant"&&<Assistant runOwner={profile?.id} role={role} projects={projects} initialQuery={initialQuery} clearInitial={()=>setInitialQuery("")}
         messages={messages} setMessages={setMessages} clearMessages={()=>setMessages(initialMessages())}
         selectedProject={assistantProject} setSelectedProject={setAssistantProject}/>}
       </>}</main></div></div>;

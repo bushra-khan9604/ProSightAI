@@ -32,6 +32,13 @@ class MultiAgentOrchestrator:
     def plan(self, query: str, project_code: str | None = None) -> OrchestrationPlan:
         """Create a deterministic routing plan without an LLM round trip."""
         normalized = query.lower()
+        planning = bool(re.search(r"\b(create|prepare|generate|build|draft|make|plan)\b", normalized)) and any(
+            term in normalized for term in ("schedule", "budget", "resource", "measurement", "procurement", "kickoff", "kick off", "cash flow", "recovery plan", "project plan", "register"))
+        analysis = any(term in normalized for term in ("analyze", "analyse", "earned value", "evm", "critical path", "mitigation", "resource conflict", "why is", "explain schedule risk", "cash-flow analysis", "historical benchmark", "compare with completed", "lessons learned"))
+        if planning or analysis:
+            agents = (["analyst"] if analysis else []) + (["planner"] if planning else []) + ["writer"]
+            return OrchestrationPlan(intent="recovery" if planning and analysis else "planning" if planning else "analysis",
+                                     agents=agents,project_code=project_code,steps=[f"Invoke {a}" for a in agents])
         write_terms = ("add ", "update ", "modify ", "delete ", "import ")
         rag_terms = ("document", "pdf", "report", "specification", "drawing", "clause")
         database_terms = (
@@ -88,6 +95,7 @@ class MultiAgentOrchestrator:
     ) -> dict[str, Any]:
         """Collect evidence concurrently and return one complete response."""
         plan = self._make_plan(query, project_code, trace)
+        plan = await self._refine_plan(query, plan)
         writer_input, route = await self._collect_evidence(
             query, role, project_code, plan, trace, status_callback
         )
@@ -108,6 +116,9 @@ class MultiAgentOrchestrator:
                 answer = self.writer.fallback(writer_input)
                 answer.notice = "OpenAI was unavailable; a deterministic evidence response was used."
         answer.agent_route = route + ["writer"]
+        for key, value in writer_input.specialist_metadata.items():
+            if key in AgentAnswer.model_fields:
+                setattr(answer, key, value)
         return answer.model_dump()
 
     async def stream(
@@ -120,11 +131,27 @@ class MultiAgentOrchestrator:
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """Yield safe progress, Writer text deltas, and one terminal response."""
         plan = self._make_plan(query, project_code, trace)
+        plan = await self._refine_plan(query, plan)
+        if any(agent in plan.agents for agent in ("analyst", "planner")):
+            yield "status", {"state": "specialist", "label": "Calculating project controls and preparing validated results"}
         if any(agent in plan.agents for agent in ("database_manager", "rag")):
             yield "status", {"state": "checking_database", "label": "Checking database"}
-        writer_input, route = await self._collect_evidence(
-            query, role, project_code, plan, trace
-        )
+        progress = asyncio.Queue()
+        collection = asyncio.create_task(self._collect_evidence(query, role, project_code, plan, trace, progress.put_nowait))
+        try:
+            while not collection.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(collection), .25)
+                except asyncio.TimeoutError:
+                    pass
+                while not progress.empty():
+                    event = progress.get_nowait()
+                    if isinstance(event, dict):
+                        yield "status", event
+            writer_input, route = await collection
+        finally:
+            if not collection.done():
+                collection.cancel()
         yield "status", {"state": "creating_response", "label": "Creating response"}
         settings = get_settings()
         provider = "local" if settings.ai_provider == "local" or not settings.openai_api_key else "openai"
@@ -178,6 +205,31 @@ class MultiAgentOrchestrator:
         )
         return plan
 
+    async def _refine_plan(self, query, plan):
+        """Use a constrained classifier only for ambiguous planning/analysis phrasing."""
+        if plan.intent in {'planning','analysis','recovery','database_write','greeting'}:
+            return plan
+        if not any(t in query.lower() for t in ('help me','what should','how can we','prepare','assess','evaluate','strategy')):
+            return plan
+        settings = get_settings()
+        if settings.ai_provider == 'local' or not settings.openai_api_key:
+            return plan
+        from openai import AsyncOpenAI
+        from ..contracts import SpecialistIntent
+        try:
+            async with AsyncOpenAI(api_key=settings.openai_api_key,timeout=20,max_retries=0) as client:
+                response = await client.responses.parse(model=settings.openai_model,
+                    input=[{'role':'system','content':'Classify the requested workflow only. ordinary retrieves facts/documents; analysis computes project performance; planning creates a proposed schedule/budget/register; recovery analyzes performance and drafts recovery. Never authorize writes. Choose clarify when the action is unresolved.'},{'role':'user','content':query}],text_format=SpecialistIntent)
+            selected = response.output_parsed
+            routes={'analysis':['analyst','writer'],'planning':['planner','writer'],'recovery':['analyst','planner','writer']}
+            if selected and selected.workflow in routes:
+                return OrchestrationPlan(intent=selected.workflow,agents=routes[selected.workflow],project_code=plan.project_code)
+            if selected and selected.workflow == 'clarify':
+                return OrchestrationPlan(intent='unsupported',agents=['writer'],project_code=plan.project_code,steps=[selected.clarification or 'Should I analyze existing performance or create a proposed plan?'])
+        except Exception:
+            pass
+        return plan
+
     async def _collect_evidence(
         self,
         query: str,
@@ -188,6 +240,16 @@ class MultiAgentOrchestrator:
         status_callback: Callable[[str], None] | None = None,
     ) -> tuple[WriterInput, list[str]]:
         """Run independent specialist reads concurrently with ContextVar propagation."""
+        if plan.intent == 'unsupported' and plan.steps:
+            from ..contracts import DatabaseEvidence
+            return self.writer.prepare_input(query,DatabaseEvidence(summary=plan.steps[0])),[]
+        if any(agent in plan.agents for agent in ("analyst", "planner")):
+            from ..controls.specialists import SpecialistService
+            self._emit_status(status_callback, "analyzing_project")
+            evidence, metadata = await SpecialistService(self.repository).run(query, project_code, role, "planner" in plan.agents, progress_callback=status_callback)
+            packet = self.writer.prepare_input(query, evidence)
+            packet.specialist_metadata = metadata
+            return packet, [a for a in plan.agents if a != "writer"]
         self._emit_status(status_callback, "checking_database")
         evidence_started = time.perf_counter()
 
@@ -287,7 +349,7 @@ class MultiAgentOrchestrator:
             "provider_response_received", provider="openai", result_size=len(text),
             component_duration_ms=round((time.perf_counter() - started) * 1000),
         )
-        return self._answer(text, route)
+        return self._answer(text, route, writer_input)
 
     async def _stream_openai_writer(
         self,
@@ -338,20 +400,24 @@ class MultiAgentOrchestrator:
             component_duration_ms=round((time.perf_counter() - started) * 1000),
             time_to_first_token_ms=first_token_ms,
         )
-        answer = self._answer(text, route)
+        answer = self._answer(text, route, writer_input)
         answer.time_to_first_token_ms = first_token_ms
         yield "final", answer.model_dump()
 
     @staticmethod
-    def _answer(text: str, route: list[str]) -> AgentAnswer:
-        citations = list(dict.fromkeys(
-            re.findall(r"[\w .()_-]+\.pdf, page \d+", text, flags=re.IGNORECASE)
-        ))
+    def _answer(text: str, route: list[str], writer_input: WriterInput | None = None) -> AgentAnswer:
+        allowed = []
+        if writer_input:
+            for packet in (writer_input.database, writer_input.rag):
+                if packet:
+                    allowed.extend(item.citation for item in packet.evidence)
+        citations = list(dict.fromkeys(c for c in allowed if c in text))
         return AgentAnswer(
             answer=text,
             citations=citations,
             agent_route=route + ["writer"],
             mode="openai",
+            **({k:v for k,v in writer_input.specialist_metadata.items() if k in AgentAnswer.model_fields} if writer_input else {}),
         )
 
     @staticmethod

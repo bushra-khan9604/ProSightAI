@@ -208,7 +208,16 @@ def create_app(repository=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         """Release ingestion workers and retrieval resources during shutdown."""
-        yield
+        controls_worker = None
+        if use_supabase:
+            from .controls.jobs import ControlsWorker
+            controls_worker = ControlsWorker(runtime.repository.service)
+            controls_worker.start()
+        try:
+            yield
+        finally:
+            if controls_worker:
+                await controls_worker.close()
         if runtime.ingestion:
             runtime.ingestion.close()
 
@@ -1048,6 +1057,9 @@ def create_app(repository=None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+
+    from .controls.api import register_controls_routes
+    register_controls_routes(app, runtime, caller_role)
 
     @app.get("/{path:path}", include_in_schema=False)
     def frontend(path: str) -> FileResponse:

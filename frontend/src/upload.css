@@ -392,3 +392,11 @@
   background: var(--surface2);
   font-size: 11px;
 }
+
+.controls-import,.controls-result {display:grid;gap:12px;margin-top:14px;color:var(--text)}
+.controls-file,.controls-actions {display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.controls-file {justify-content:space-between;padding:8px;background:var(--surface2);border-radius:8px;overflow-wrap:anywhere}
+.controls-import .table-wrap,.controls-result .table-wrap {max-height:360px;overflow:auto}
+.controls-result details {padding:8px;border:1px solid var(--border);border-radius:8px}
+.controls-result input {min-width:90px;max-width:140px;color:var(--text);background:var(--surface2);border:1px solid var(--border);padding:6px}
+.controls-result button,.controls-file button {color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:7px 10px;cursor:pointer}
