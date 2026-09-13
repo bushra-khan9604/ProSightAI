@@ -1,4 +1,4 @@
-"""Bounded background ingestion with durable SQLite job state."""
+"""Bounded background ingestion with durable, restart-safe job state."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import hashlib
 import logging
 import shutil
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 
 from ..repository import ProjectRepository
@@ -39,13 +40,26 @@ class IngestionManager:
         self.upload_dir = Path(upload_dir)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.column_mapper = OpenAIColumnMapper()
-        self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="prosight-ingest")
-        self.repository.recover_interrupted_jobs()
+        self.executor = ThreadPoolExecutor(
+            max_workers=min(max(workers, 1), 2), thread_name_prefix="prosight-ingest"
+        )
+        recovered = self.repository.recover_interrupted_jobs() or []
+        for item in recovered:
+            self._submit_background(
+                self._process, item["job"]["id"], item["document"], "admin"
+            )
+
+    def _submit_background(self, function, *args) -> None:
+        """Submit work while preserving the request identity when one exists."""
+        context = copy_context()
+        self.executor.submit(context.run, function, *args)
 
     def submit(
         self, source: Path, original_name: str, project_code: str, actor_role: str
     ) -> dict:
         """Validate, copy, register, and enqueue one PDF or XLSX upload."""
+        if actor_role not in {"project_manager", "planning_engineer", "admin"}:
+            raise PermissionError("This role cannot upload documents or data")
         safe_name = Path(original_name).name
         if safe_name != original_name or safe_name in {"", ".", ".."}:
             raise ValueError("Invalid filename")
@@ -73,16 +87,62 @@ class IngestionManager:
         except Exception:
             destination.unlink(missing_ok=True)
             raise
+        store_file = getattr(self.repository, "store_document_file", None)
+        if store_file:
+            try:
+                store_file(document, destination)
+            except Exception:
+                self.repository.delete_document_record(document["id"])
+                destination.unlink(missing_ok=True)
+                raise
         job = self.repository.create_job(document["id"])
-        self.executor.submit(self._process, job["id"], document, actor_role)
+        self._submit_background(self._process, job["id"], document, actor_role)
         return {"document": document, "job": job}
 
     def _process(self, job_id: str, document: dict, actor_role: str) -> None:
         """Run type-specific ingestion and persist every lifecycle transition."""
         try:
+            claim = getattr(self.repository, "claim_job", None)
+            if claim and not claim(job_id):
+                return
             self.repository.update_job(job_id, "processing", 10, "Validating file")
+            latest = self.repository.get_document(document["id"]) or document
+            latest["stored_path"] = str(self._materialize(latest))
+            document = latest
             path = Path(document["stored_path"])
             if document["kind"] == "pdf":
+                current_job = self.repository.get_job(job_id) or {}
+                if current_job.get("change_request_id"):
+                    change = self.repository.get_change_request(
+                        current_job["change_request_id"]
+                    )
+                    if change and change.get("status") == "approved":
+                        self._index_pdf(job_id, document)
+                        return
+                    if change and change.get("status") == "pending":
+                        self.repository.update_document_status(
+                            document["id"], "awaiting_approval"
+                        )
+                        self.repository.update_job(
+                            job_id, "awaiting_approval", 60,
+                            "PDF validated and awaiting Admin approval",
+                            current_job["change_request_id"],
+                        )
+                        return
+                if document.get("date_status") in {"confirmed", "fallback"} and document.get(
+                    "effective_date"
+                ):
+                    self._request_pdf_approval(job_id, document, actor_role)
+                    return
+                if document.get("date_status") == "detected" and document.get("reporting_date"):
+                    self.repository.update_document_status(
+                        document["id"], "awaiting_date_confirmation"
+                    )
+                    self.repository.update_job(
+                        job_id, "awaiting_date_confirmation", 45,
+                        f"Confirm detected report date: {document['reporting_date']}",
+                    )
+                    return
                 detected = detect_reporting_date(path)
                 if detected:
                     self.repository.update_document_date(
@@ -102,7 +162,9 @@ class IngestionManager:
                     self.repository.update_document_date(
                         document["id"], None, fallback, "fallback"
                     )
-                    self._index_pdf(job_id, self.repository.get_document(document["id"]))
+                    resolved = self.repository.get_document(document["id"])
+                    resolved["stored_path"] = str(path)
+                    self._request_pdf_approval(job_id, resolved, actor_role)
             else:
                 preview = preview_workbook(path, document["project_code"])
                 if preview["mapping_required"]:
@@ -139,28 +201,53 @@ class IngestionManager:
         if job["status"] != "awaiting_date_confirmation":
             raise ValueError("This PDF is not awaiting date confirmation")
         document = self.repository.get_document(job["document_id"])
+        document["stored_path"] = str(self._materialize(document))
         self.repository.update_document_date(
             document["id"], reporting_date, reporting_date, "confirmed"
         )
-        self.repository.update_document_status(document["id"], "processing")
-        self.repository.update_job(job_id, "processing", 50, "Report date confirmed")
-        self.executor.submit(
-            self._index_pdf, job_id, self.repository.get_document(document["id"])
+        resolved = self.repository.get_document(document["id"])
+        resolved["stored_path"] = document["stored_path"]
+        self._request_pdf_approval(job_id, resolved, actor_role)
+        return self.repository.get_job(job_id)
+
+    def _request_pdf_approval(
+        self, job_id: str, document: dict, actor_role: str
+    ) -> None:
+        """Create the mandatory Admin gate before any PDF is embedded."""
+        change = self.repository.create_pdf_approval(job_id, document, actor_role)
+        self.repository.update_document_status(document["id"], "awaiting_approval")
+        self.repository.update_job(
+            job_id, "awaiting_approval", 60,
+            "PDF validated and awaiting Admin approval", change["id"],
         )
+
+    def resume_approved_pdf(self, job_id: str) -> dict:
+        """Resume an approved PDF without requiring the approver request to stay open."""
+        job = self.repository.get_job(job_id)
+        if not job or job.get("kind") != "pdf":
+            raise KeyError("PDF ingestion job not found")
+        document = self.repository.get_document(job["document_id"])
+        if not document:
+            raise KeyError("PDF document not found")
+        document["stored_path"] = str(self._materialize(document))
+        self.repository.update_document_status(document["id"], "processing")
+        self.repository.update_job(job_id, "processing", 65, "Admin approved PDF ingestion")
+        self._submit_background(self._index_pdf, job_id, document)
         return self.repository.get_job(job_id)
 
     def _index_pdf(self, job_id: str, document: dict) -> None:
         """Extract, embed, and publish one date-resolved PDF."""
         try:
             chunks = extract_pdf_chunks(Path(document["stored_path"]), document)
+            self.repository.update_document_status(document["id"], "embedding")
             self.repository.update_job(
-                job_id, "processing", 55, f"Embedding {len(chunks)} chunks"
+                job_id, "embedding", 55, f"Embedding {len(chunks)} chunks"
             )
             self.rag_store.add_chunks(chunks)
-            self.repository.update_document_status(document["id"], "ready")
-            self.repository.update_job(
-                job_id, "ready", 100, f"Indexed {len(chunks)} chunks"
+            self.repository.complete_document_ingestion(
+                document["id"], job_id, len(chunks)
             )
+            Path(document["stored_path"]).unlink(missing_ok=True)
         except Exception as error:
             logger.exception(
                 "pdf_indexing_failed",
@@ -180,7 +267,10 @@ class IngestionManager:
             raise KeyError("Document not found")
         if document["kind"] == "pdf":
             self.rag_store.delete_document(document_id)
-        Path(document["stored_path"]).unlink(missing_ok=True)
+        self._cached_path(document).unlink(missing_ok=True)
+        remove = getattr(self.repository, "delete_document_record_and_storage", None)
+        if remove:
+            return remove(document_id) or {}
         return self.repository.delete_document_record(document_id) or {}
 
     def clear_failed_job(self, job_id: str, actor_role: str) -> dict:
@@ -201,8 +291,29 @@ class IngestionManager:
             raise KeyError("Failed upload metadata not found")
         if document["kind"] == "pdf":
             self.rag_store.delete_document(document["id"])
-        Path(document["stored_path"]).unlink(missing_ok=True)
+        self._cached_path(document).unlink(missing_ok=True)
         return self.repository.delete_failed_ingestion_records(job_id, actor_role)
+
+    def _cached_path(self, document: dict) -> Path:
+        """Resolve the bounded local processing cache for a stored object."""
+        if document.get("stored_path"):
+            return Path(document["stored_path"])
+        return (
+            self.upload_dir / document["project_code"]
+            / f"{document['checksum'][:12]}-{document['filename']}"
+        )
+
+    def _materialize(self, document: dict) -> Path:
+        """Restore a source object from private Storage into the bounded local cache."""
+        path = self._cached_path(document)
+        if path.exists():
+            return path
+        loader = getattr(self.repository, "load_document_file", None)
+        if not loader:
+            raise ValueError("The uploaded source file is no longer available")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(loader(document))
+        return path
 
     def close(self) -> None:
         """Stop accepting background work and release vector-store resources."""

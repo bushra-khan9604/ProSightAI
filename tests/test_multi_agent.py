@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from prosight.agents.database_manager import DatabaseManagerAgent
 from prosight.agents.orchestrator import MultiAgentOrchestrator
 from prosight.config import get_settings
-from prosight.contracts import ChangeOperation, EvidenceItem, RAGEvidence
+from prosight.contracts import (
+    ChangeOperation, DatabaseEvidence, EvidenceItem, RAGEvidence, WriterInput,
+)
 from prosight.observability import RequestTrace
 from prosight.repository import DEFAULT_DATA, ProjectRepository
+from prosight.supabase_gateway import current_access_token
 
 
 class FakeRAGAgent:
@@ -50,6 +55,12 @@ class MultiAgentTests(unittest.TestCase):
         plan = self.orchestrator.plan("What does the PDF report say?", "PRJ-2024-001")
         self.assertEqual(["rag", "writer"], plan.agents)
 
+    def test_project_scoped_unstructured_question_defaults_to_rag(self):
+        plan = self.orchestrator.plan(
+            "What fire rating is required for the service corridor?", "PRJ-2024-001"
+        )
+        self.assertEqual(["rag", "writer"], plan.agents)
+
     def test_routes_combined_query(self):
         plan = self.orchestrator.plan(
             "Compare project progress with the monthly report", "PRJ-2024-001"
@@ -72,7 +83,7 @@ class MultiAgentTests(unittest.TestCase):
         self.assertIn("writer", result["agent_route"])
         self.assertIn("Monthly Report.pdf, page 14", result["citations"])
 
-    def test_hosted_agents_use_separate_explicit_reasoning_levels(self):
+    def test_hosted_pipeline_creates_only_writer_with_configured_reasoning(self):
         created_agents = []
 
         class FakeAgent:
@@ -80,16 +91,13 @@ class MultiAgentTests(unittest.TestCase):
                 self.kwargs = kwargs
                 created_agents.append(self)
 
-            def as_tool(self, **kwargs):
-                return {"agent": self, **kwargs}
-
-        plan = self.orchestrator.plan("Explain project progress", "PRJ-2024-001")
         with (
             patch("agents.Agent", FakeAgent),
-            patch("agents.function_tool", side_effect=lambda function: function),
             patch(
-                "agents.Runner.run_sync",
-                return_value=SimpleNamespace(final_output="Evidence-grounded response"),
+                "agents.Runner.run",
+                new=AsyncMock(
+                    return_value=SimpleNamespace(final_output="Evidence-grounded response")
+                ),
             ),
             patch.dict(
                 "os.environ",
@@ -101,16 +109,136 @@ class MultiAgentTests(unittest.TestCase):
                 clear=False,
             ),
         ):
-            self.orchestrator._run_openai(
-                "Explain project progress", "project_manager", "PRJ-2024-001",
-                plan, RequestTrace(), [],
-            )
+            asyncio.run(self.orchestrator._write_openai(
+                WriterInput(query="Explain project progress"), [], [], RequestTrace()
+            ))
 
-        writer, manager = created_agents
+        self.assertEqual(1, len(created_agents))
+        writer = created_agents[0]
         self.assertEqual("gpt-5.6-luna", writer.kwargs["model"])
         self.assertEqual("low", writer.kwargs["model_settings"].reasoning.effort)
-        self.assertEqual("gpt-5.6-luna", manager.kwargs["model"])
-        self.assertEqual("none", manager.kwargs["model_settings"].reasoning.effort)
+
+    def test_combined_evidence_runs_concurrently_and_keeps_auth_context(self):
+        database_started = threading.Event()
+        rag_started = threading.Event()
+        observed_tokens = []
+
+        class Database:
+            def read(self, *_args):
+                observed_tokens.append(current_access_token.get())
+                database_started.set()
+                if not rag_started.wait(1):
+                    raise AssertionError("RAG retrieval did not start concurrently")
+                return DatabaseEvidence(summary="Database evidence")
+
+        class RAG:
+            def retrieve(self, query, project_code):
+                observed_tokens.append(current_access_token.get())
+                rag_started.set()
+                if not database_started.wait(1):
+                    raise AssertionError("Database retrieval did not start concurrently")
+                return RAGEvidence(query=query, project_code=project_code)
+
+        self.orchestrator.database = Database()
+        self.orchestrator.rag = RAG()
+        token = current_access_token.set("caller-jwt")
+        try:
+            with patch.dict("os.environ", {"PROSIGHT_AI_PROVIDER": "local"}):
+                result = asyncio.run(self.orchestrator.run_async(
+                    "Compare project progress with the monthly report",
+                    "project_manager", "PRJ-2024-001", RequestTrace(),
+                ))
+        finally:
+            current_access_token.reset(token)
+
+        self.assertEqual(["caller-jwt", "caller-jwt"], sorted(observed_tokens))
+        self.assertEqual(["database_manager", "rag", "writer"], result["agent_route"])
+
+    def test_writer_stream_reconstructs_final_answer_from_text_deltas(self):
+        from openai.types.responses import ResponseTextDeltaEvent
+
+        def delta(text, sequence):
+            return SimpleNamespace(
+                type="raw_response_event",
+                data=ResponseTextDeltaEvent(
+                    content_index=0, delta=text, item_id="message-1", logprobs=[],
+                    output_index=0, sequence_number=sequence,
+                    type="response.output_text.delta",
+                ),
+            )
+
+        class StreamResult:
+            final_output = "Grounded response"
+
+            async def stream_events(self):
+                yield delta("Grounded ", 1)
+                yield delta("response", 2)
+
+            def cancel(self):
+                return None
+
+        async def collect():
+            with (
+                patch.object(self.orchestrator, "_writer_agent", return_value=object()),
+                patch("agents.Runner.run_streamed", return_value=StreamResult()),
+            ):
+                return [event async for event in self.orchestrator._stream_openai_writer(
+                    WriterInput(query="Question"), [], [], RequestTrace()
+                )]
+
+        events = asyncio.run(collect())
+        streamed = "".join(payload["text"] for name, payload in events if name == "delta")
+        final = next(payload for name, payload in events if name == "final")
+        self.assertEqual("Grounded response", streamed)
+        self.assertEqual(streamed, final["answer"])
+        self.assertIsInstance(final["time_to_first_token_ms"], int)
+
+    def test_stream_failure_after_delta_keeps_partial_answer_without_fallback(self):
+        async def interrupted(*_args):
+            yield "delta", {"text": "Partial answer"}
+            raise RuntimeError("stream interrupted")
+
+        self.orchestrator._stream_openai_writer = interrupted
+
+        async def collect():
+            with patch.dict("os.environ", {
+                "PROSIGHT_AI_PROVIDER": "openai", "OPENAI_API_KEY": "test-key",
+            }):
+                return [event async for event in self.orchestrator.stream(
+                    "hello", "project_manager", None, RequestTrace()
+                )]
+
+        events = asyncio.run(collect())
+        self.assertEqual("Partial answer", next(
+            payload["text"] for name, payload in events if name == "delta"
+        ))
+        error = next(payload for name, payload in events if name == "error")
+        self.assertTrue(error["partial"])
+        self.assertFalse(any(name == "final" for name, _ in events))
+
+    def test_stream_failure_before_delta_uses_grounded_local_fallback(self):
+        async def unavailable(*_args):
+            if False:
+                yield "delta", {"text": ""}
+            raise RuntimeError("provider unavailable")
+
+        self.orchestrator._stream_openai_writer = unavailable
+
+        async def collect():
+            with patch.dict("os.environ", {
+                "PROSIGHT_AI_PROVIDER": "openai", "OPENAI_API_KEY": "test-key",
+            }):
+                return [event async for event in self.orchestrator.stream(
+                    "Show project progress", "project_manager", "PRJ-2024-001",
+                    RequestTrace(),
+                )]
+
+        events = asyncio.run(collect())
+        final = next(payload for name, payload in events if name == "final")
+        streamed = "".join(payload["text"] for name, payload in events if name == "delta")
+        self.assertEqual(final["answer"], streamed)
+        self.assertEqual("local", final["mode"])
+        self.assertIn("deterministic evidence response", final["notice"])
 
     def test_reasoning_configuration_rejects_unknown_effort(self):
         with patch.dict(

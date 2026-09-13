@@ -21,12 +21,19 @@ def main() -> None:
     host = sub.add_parser("serve", help="Start the JSON HTTP API")
     host.add_argument("--host", default="127.0.0.1")
     host.add_argument("--port", type=int, default=8000)
+    migrate = sub.add_parser("migrate-supabase", help="Copy legacy SQLite data to Supabase")
+    migrate.add_argument("--sqlite", default=None, help="Legacy SQLite database path")
+    migrate.add_argument("--dry-run", action="store_true", help="Validate without remote writes")
     args = parser.parse_args()
     if args.command == "init":
         ProjectRepository().initialize()
         print("Sample database initialized.")
     elif args.command == "ask":
         print(json.dumps(ProSightAgent().ask(args.query, args.role), indent=2))
+    elif args.command == "migrate-supabase":
+        from .migration import SupabaseMigrator
+        result = SupabaseMigrator(args.sqlite or ProjectRepository().db_path, args.dry_run).run()
+        print(json.dumps(result, indent=2, default=str))
     else:
         try:
             # Import the web stack only for `serve`, so database/CLI commands remain usable.

@@ -1,157 +1,123 @@
 # ProSight AI
 
-ProSight AI is a manager-style multi-agent application for completed, active,
-and future construction projects. It combines governed project data, PDF RAG,
-reviewed Excel imports, a React command center, and traceable OpenAI agents.
+ProSight AI is a Supabase-backed construction intelligence application. It
+combines governed portfolio data, private document ingestion, hybrid pgvector
+retrieval, reviewed workbook imports, a responsive React command center, and
+traceable OpenAI agents.
 
-## What the prototype answers
+## Production foundation
 
-- Lists projects by lifecycle status.
-- Shows contract value, planned/revised dates, delay, and progress variance.
-- Finds project managers, engineers, site/client contacts, email, and mobile.
-- Reports activities, manpower, equipment, man-hours, and milestones.
-- Gives an evidence/source label with every answer.
-- Restricts sensitive contact details for `employee` users.
-- Routes work through Main Orchestrator, Database Manager, RAG, and Writer agents.
-- Indexes project-scoped text PDFs with page citations.
-- Validates Excel imports and requires Admin approval before database writes.
+- Supabase Auth with email/password signup, login, refresh, logout, and password recovery.
+- Protected `/app/*` routes and bearer-token enforcement on every `/api/*` route except health.
+- PostgreSQL with RLS, user profiles, project memberships, audits, notifications, and approval ownership.
+- Private Supabase Storage buckets for project documents and portfolio imports.
+- Page-aware PDF chunks, GIN full-text search, HNSW `halfvec(1536)`, and reciprocal-rank hybrid search.
+- In-process batched `text-embedding-3-small` ingestion with durable restart recovery.
+- Parallel database/RAG evidence collection with Writer-only SSE token streaming.
+- Idempotent legacy SQLite/file migration with dry-run, row-count, and file-checksum verification.
 
-## Quick start
+The original FastAPI agent contracts and the established React visual flow are
+preserved. The sidebar now displays the verified identity and role rather than
+allowing users to impersonate a role.
 
-Install Python 3.11+ dependencies and initialize the sample database:
+## Local application setup
 
-```powershell
-python -m pip install -e .
-python -m prosight.cli init
-Copy-Item .env.example .env
-# Add OPENAI_API_KEY to .env.
-python -m prosight.cli serve
-```
-
-### React command center
-
-Node.js 24 LTS or newer is required. After installing Node.js on Windows,
-open a new PowerShell window so the updated user `PATH` is loaded.
-
-Install and build the React frontend:
-
-```powershell
-cd frontend
-npm install
-npm run build
-cd ..
-$env:PYTHONPATH="src"
-python -m prosight.cli serve
-```
-
-Open `http://127.0.0.1:8000`. The Python server serves the production React
-build and exposes the existing agent and repository through `/api`.
-
-For frontend development, run the Python API and `npm run dev` in separate
-terminals. Vite proxies `/api` requests to port 8000.
-
-The UI includes a portfolio command center, project explorer, role-aware
-multi-agent chat, project selection, light/dark modes, and an Upload Center.
-
-If the package is not installed, set the source directory:
-
-```powershell
-$env:PYTHONPATH="src"
-python -m prosight.cli init
-```
-
-The API listens on `http://127.0.0.1:8000`:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/query `
-  -ContentType application/json `
-  -Body '{"query":"List active projects","user_role":"project_manager","project_code":"PRJ-2024-001"}'
-```
-
-### Application model configuration
+Python 3.11+ and Node.js 20+ are required.
 
 ```powershell
 Copy-Item .env.example .env
-# Edit .env and set OPENAI_API_KEY to your key.
-python -m prosight.cli serve
+# Fill in the Supabase and OpenAI settings in .env.
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+pnpm --dir frontend install
+pnpm --dir frontend run build
+.\.venv\Scripts\python.exe -m prosight.cli serve
 ```
 
-The React AI Assistant and all named LLM agents use `gpt-5.6-luna`. PDF chunks
-use `text-embedding-3-small` and persistent local Chroma storage. Secrets are
-read from the ignored `.env` file and must never be committed.
+Open `http://127.0.0.1:8000`. For frontend development, run
+`pnpm --dir frontend run dev` alongside the FastAPI server. Vite reads the
+repository-root `.env` and proxies `/api` to port 8000.
 
-Supported provider values are `openai`, `local`, and `auto`. OpenAI is the only
-LLM provider. The deterministic `local` mode exists solely for offline tests and
-direct database responses; it is not a language model.
+The public health endpoint is available at `/api/health`. All other API calls
+require a valid Supabase access token; the browser client attaches it
+automatically.
 
-### Upload and approval workflow
+Assistant queries are routed deterministically. Database and RAG evidence run
+concurrently for mixed questions, after which a single Writer Agent streams
+`delta` events through `/api/query/stream`; the terminal `final` event retains
+the complete backward-compatible answer, citations, route, and timing metadata.
 
-1. Open **AI Assistant**, select a project, and choose **Upload Center**.
-2. Upload a searchable `.pdf` (20 MB maximum) or `.xlsx` (10 MB maximum).
-3. PDF jobs extract pages, generate embeddings, and become queryable with page citations.
-4. Excel jobs create a validation preview and stop at `awaiting_approval`.
-5. Switch the demonstration role to **Admin** to approve or reject the import.
+## Supabase rollout
 
-Scanned/encrypted PDFs, macro-enabled workbooks, legacy Excel formats, and
-workbooks over 10,000 populated rows are rejected in this version.
-
-### Query-flow logs
-
-ProSight writes privacy-sanitized JSON logs to the server console and
-`logs/prosight.log`. Follow the file live from PowerShell:
+The complete hosted rollout and rollback checklist is in
+[`docs/supabase-rollout.md`](docs/supabase-rollout.md). In outline:
 
 ```powershell
-Get-Content .\logs\prosight.log -Wait
+supabase link --project-ref YOUR_PROJECT_REF
+supabase db push
+python -m prosight.cli migrate-supabase --sqlite data\prosight.db --dry-run
+python -m prosight.cli migrate-supabase --sqlite data\prosight.db
 ```
 
-Configuration:
+The bootstrap administrator must first create an account using the configured
+email. Set `PROSIGHT_BOOTSTRAP_ADMIN_EMAIL` only for migration. Further role and
+membership changes are intentionally handled in the Supabase dashboard.
+
+Do not switch `PROSIGHT_DATA_BACKEND` to `supabase` until the migration report
+returns `verified: true`, authentication/RLS checks pass, and all migrated PDFs
+have reached `ready`.
+
+## Ingestion and retrieval
+
+PDFs remain within page boundaries and long pages are token-aware chunked with
+overlap. The bounded FastAPI background executor downloads private source files,
+removes repeated headers/footers, batches OpenAI embedding requests, retries
+transient failures, and atomically advances the document/job to `ready`. Every
+PDF requires explicit Admin approval after validation and date confirmation;
+embedding never starts before approval, including for Admin-uploaded PDFs.
+FastAPI creates query embeddings and invokes the security-invoker hybrid-search
+RPC with the caller's JWT so RLS remains active.
+
+Workbook imports continue to create previews and require approval before
+governed data changes. Employees are read-only and receive masked contact
+details. Administrators retain portfolio-wide access; other users require a
+project membership.
+
+## Legacy migration source
+
+SQLite is no longer a production backend. It remains available for isolated
+legacy tests and as the cutover source. The migrator preserves stable IDs and
+project codes, uploads source files to private Storage, supports repeat runs,
+and compares remote row counts and downloaded object SHA-256 checksums.
+
+Keep the SQLite database and upload directories read-only until representative
+payloads, counts, checksums, authentication, RLS, and re-indexing have passed.
+There are no dual writes.
+
+## Tests
 
 ```powershell
-$env:PROSIGHT_LOG_LEVEL="INFO"
-$env:PROSIGHT_LOG_DIR="logs"
-$env:PROSIGHT_LOG_PREVIEW_CHARS="160"
-$env:PROSIGHT_LOG_MAX_BYTES="5242880"
-$env:PROSIGHT_LOG_BACKUP_COUNT="5"
+$env:PYTHONPATH="src"
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+$env:PROSIGHT_AI_PROVIDER="local"
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+pnpm --dir frontend run build
 ```
 
-Every query response includes `request_id` and `duration_ms`, which match the
-server log entries and browser console events. Query/response previews redact
-email addresses, phone numbers, authorization values, and API keys.
+The unit suite runs without OpenAI calls. Supabase RLS/Auth/Storage and pgvector
+integration tests should run against an isolated local or test project before
+pushing the migrations to production.
 
 ## Repository map
 
-- `docs/architecture.md` — target architecture, security, RAG, and rollout.
-- `data/projects.json` — sample construction project dataset.
-- `src/prosight/repository.py` — SQLite data layer and access policy.
-- `src/prosight/agents/` — Orchestrator, Database Manager, RAG, and Writer agents.
-- `src/prosight/ingestion/` — PDF/Excel validation and durable job workflows.
-- `src/prosight/rag/` — project-filtered Chroma retrieval and OpenAI embeddings.
-- `src/prosight/api.py` — typed FastAPI query, upload, and approval transport.
-- `tests/` — repository and agent tests.
+- `supabase/migrations/` — PostgreSQL schema, RLS, Storage policies, and hybrid search.
+- `src/prosight/auth.py` — JWKS token verification and request-scoped identity.
+- `src/prosight/supabase_repository.py` — RLS-aware production repository.
+- `src/prosight/migration.py` — legacy SQLite and file migration.
+- `src/prosight/rag/` — application embeddings and page-aware pgvector retrieval.
+- `frontend/src/AuthApp.jsx` — landing, Auth flows, and protected routing.
+- `docs/architecture.md` — implemented architecture and trust boundaries.
+- `docs/supabase-rollout.md` — deployment, verification, and rollback runbook.
 
-### Production module layout
-
-- `frontend/` — React presentation layer and responsive Assistant UI.
-- `src/prosight/config.py` — typed environment and `.env` configuration.
-- `src/prosight/providers/` — isolated OpenAI provider adapter.
-- `src/prosight/tools/` — labeled Project Insights Agent tool registry.
-- `src/prosight/agent.py` — provider orchestration and local agent.
-- `src/prosight/repository.py` — SQLite data access and role policy.
-- `src/prosight/api.py` — JSON HTTP transport.
-- `src/prosight/observability.py` — privacy-safe structured logging.
-- `data/`, `docs/`, and `tests/` — data, documentation, and verification.
-
-## Test
-
-```powershell
-$env:PYTHONPATH="src"
-$env:PROSIGHT_AI_PROVIDER="local"
-python -m unittest discover -s tests -v
-```
-
-The suite forces local mode, so unit tests never call `gpt-5.6-luna`, consume
-OpenAI credits, or require network access.
-
-All names, phone numbers, emails, clients, values, and documents in the sample
-dataset are fictional.
+All names, contact details, clients, values, and documents in the sample data
+are fictional.

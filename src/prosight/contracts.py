@@ -51,6 +51,7 @@ class WriterInput(BaseModel):
     query: str
     database: DatabaseEvidence | None = None
     rag: RAGEvidence | None = None
+    database_table: str | None = None
 
 
 class AgentAnswer(BaseModel):
@@ -61,6 +62,7 @@ class AgentAnswer(BaseModel):
     agent_route: list[str] = Field(default_factory=list)
     mode: str = "openai"
     notice: str | None = None
+    time_to_first_token_ms: int | None = None
 
 
 class ChangeOperation(BaseModel):

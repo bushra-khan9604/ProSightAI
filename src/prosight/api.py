@@ -9,17 +9,22 @@ import json
 import shutil
 import tempfile
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import date
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse, StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .agents import MultiAgentOrchestrator
 from .agents.rag_agent import RAGAgent
+from .auth import SupabaseAuthVerifier, current_auth, require_current_auth
 from .config import get_settings
 from .ingestion import IngestionManager
 from .ingestion.excel import preview_workbook
@@ -27,6 +32,8 @@ from .ingestion.portfolio import create_portfolio_template, parse_portfolio_work
 from .observability import RequestTrace, configure_logging, sanitize
 from .rag import RAGStore
 from .repository import DEFAULT_DB, ProjectRepository
+from .supabase_repository import SupabaseProjectRepository
+from .supabase_gateway import SupabaseError, current_access_token
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,7 +41,7 @@ FRONTEND_DIST = ROOT / "frontend" / "dist"
 UPLOAD_DIR = ROOT / "data" / "uploads"
 VECTOR_DIR = ROOT / "data" / "vector_store"
 PORTFOLIO_DIR = ROOT / "data" / "portfolio_imports"
-ROLES = {"project_manager", "planning_engineer", "admin"}
+ROLES = {"employee", "project_manager", "planning_engineer", "admin"}
 CHANGE_PREVIEW_ROLES = {"project_manager", "admin"}
 PROJECT_UPDATE_ROLES = {"project_manager", "planning_engineer", "admin"}
 
@@ -49,8 +56,9 @@ class ChatHistoryMessage(BaseModel):
 class QueryRequest(BaseModel):
     """Validated AI Assistant query."""
 
+    model_config = ConfigDict(extra="forbid")
+
     query: str = Field(min_length=1, max_length=10_000)
-    user_role: str = "project_manager"
     project_code: str | None = None
     history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=10)
 
@@ -120,10 +128,57 @@ class DocumentDateConfirmation(BaseModel):
     reporting_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
+class ManpowerScenarioChange(BaseModel):
+    """One temporary workforce change included in an exported scenario."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    emp_code: str = Field(min_length=1, max_length=100)
+    workforce_state: Literal["allocated", "on_leave", "not_allocated"]
+    target_project_code: str | None = Field(default=None, max_length=30)
+
+    @model_validator(mode="after")
+    def require_allocated_project(self) -> "ManpowerScenarioChange":
+        if self.workforce_state == "allocated" and not self.target_project_code:
+            raise ValueError("Allocated scenario changes require a target project")
+        return self
+
+
+class ManpowerExportRequest(BaseModel):
+    """The visible register and optional in-memory scenario to export."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_codes: list[str] = Field(min_length=1, max_length=5_000)
+    scenario_changes: list[ManpowerScenarioChange] = Field(default_factory=list, max_length=5_000)
+
+
+def _manpower_state(item: dict) -> str:
+    """Normalize the imported free-text workforce fields for analytics/export."""
+    status = str(item.get("status") or "").strip().casefold()
+    allocation = str(item.get("allocation") or "").strip().casefold()
+    location = str(item.get("current_location") or "").strip().casefold()
+    if any(term in status or term in location for term in ("on leave", "leave", "vacation")):
+        return "on_leave"
+    if not item.get("current_project_code") or any(
+        term in status or term in allocation
+        for term in ("not allocated", "unallocated", "available", "bench")
+    ):
+        return "not_allocated"
+    return "allocated"
+
+
+def _excel_safe(value):
+    """Prevent imported text from becoming an executable spreadsheet formula."""
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
 class Runtime:
     """Application dependencies shared by API handlers and background workers."""
 
-    def __init__(self, repository: ProjectRepository):
+    def __init__(self, repository):
         self.repository = repository
         self.repository._ensure()
         self.rag_store: RAGStore | None = None
@@ -139,43 +194,119 @@ class Runtime:
         )
 
 
-def create_app(repository: ProjectRepository | None = None) -> FastAPI:
+def create_app(repository=None) -> FastAPI:
     """Build an independently testable FastAPI application."""
     configure_logging()
-    runtime = Runtime(repository or ProjectRepository(DEFAULT_DB))
+    settings = get_settings()
+    use_supabase = repository is None and (
+        settings.data_backend == "supabase"
+        or (settings.data_backend == "auto" and bool(settings.supabase_url))
+    )
+    runtime = Runtime(repository or (SupabaseProjectRepository() if use_supabase else ProjectRepository(DEFAULT_DB)))
+    auth_verifier = SupabaseAuthVerifier() if use_supabase else None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        """Release worker and Chroma resources during graceful shutdown."""
+        """Release ingestion workers and retrieval resources during shutdown."""
         yield
         if runtime.ingestion:
             runtime.ingestion.close()
 
     app = FastAPI(title="ProSight AI", version="0.2.0", lifespan=lifespan)
     app.state.runtime = runtime
+    app.state.auth_required = auth_verifier is not None
+
+    @app.middleware("http")
+    async def authenticate_api(request: Request, call_next):
+        """Protect application APIs and install an RLS-aware request identity."""
+        if not auth_verifier or request.url.path in {"/health", "/api/health"} or not request.url.path.startswith("/api/"):
+            return await call_next(request)
+        try:
+            context = await asyncio.to_thread(
+                auth_verifier.verify, request.headers.get("authorization")
+            )
+        except HTTPException as error:
+            return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+        auth_token = current_auth.set(context)
+        access_token = current_access_token.set(context.access_token)
+        try:
+            return await call_next(request)
+        finally:
+            current_access_token.reset(access_token)
+            current_auth.reset(auth_token)
+
+    def caller_role(request: Request) -> str:
+        context = current_auth.get()
+        # The query fallback exists only for explicitly injected legacy test repositories.
+        legacy_role = request.query_params.get("role") if request and not use_supabase else None
+        role = context.role if context else (legacy_role or "project_manager")
+        _validate_role(role)
+        return role
+
+    def require_project_access(project_code: str) -> None:
+        """Reject authenticated cross-project requests before repository access."""
+        context = current_auth.get()
+        if context and context.role != "admin" and project_code not in context.project_codes:
+            raise HTTPException(status_code=403, detail="Project membership is required")
 
     @app.get("/health")
     @app.get("/api/health")
     def health() -> dict:
+        rag_health = {
+            "status": "unavailable",
+            "database": "ready" if not use_supabase else "unknown",
+            "openai_configured": bool(settings.openai_api_key),
+            "embedding_model": settings.embedding_model,
+            "pending_jobs": None,
+            "failed_jobs": None,
+        }
+        if use_supabase:
+            try:
+                runtime.repository.service.select(
+                    "document_chunks", select="id", limit="1"
+                )
+                rag_health["database"] = "ready"
+            except Exception:
+                rag_health["database"] = "unavailable"
+        if runtime.rag_store:
+            try:
+                rag_health = {
+                    **rag_health,
+                    **runtime.rag_store.health(),
+                    "database": "ready",
+                }
+            except Exception:
+                logging.getLogger("prosight").exception("rag_health_check_failed")
+                rag_health["status"] = "degraded"
+                rag_health["database"] = "unavailable"
         return {
             "status": "ok",
             "llm_provider": "openai",
-            "model": get_settings().openai_model,
+            "model": settings.openai_model,
             "rag_available": runtime.rag_store is not None,
+            "data_backend": "supabase" if use_supabase else "sqlite",
+            "rag": rag_health,
+        }
+
+    @app.get("/api/me")
+    def me() -> dict:
+        context = require_current_auth()
+        return {
+            "id": context.user_id, "email": context.email,
+            "display_name": context.display_name, "role": context.role,
+            "project_codes": list(context.project_codes),
         }
 
     @app.get("/api/projects")
-    def projects(role: str = Query("project_manager")) -> list[dict]:
-        _validate_role(role)
+    def projects(role: str = Depends(caller_role)) -> list[dict]:
         return runtime.repository.list_projects(user_role=role)
 
     @app.post("/api/projects/change-preview", status_code=202)
     def create_project_preview(
         draft: ProjectDraft,
-        role: str = Query(...),
+        role: str = Depends(caller_role),
     ) -> dict:
         """Create a reviewed project-addition request without mutating immediately."""
-        _validate_role(role)
         _require_role(role, CHANGE_PREVIEW_ROLES, "This role cannot prepare project changes")
         if runtime.repository.find_project(draft.code, "admin"):
             raise HTTPException(status_code=409, detail="Project code already exists")
@@ -200,11 +331,10 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.post("/api/projects/import-preview", status_code=202)
     def create_project_import_preview(
-        role: str = Form(...),
         file: UploadFile = File(...),
+        role: str = Depends(caller_role),
     ) -> dict:
         """Validate one canonical workbook and create an editable import preview."""
-        _validate_role(role)
         _require_role(role, CHANGE_PREVIEW_ROLES, "This role cannot prepare project imports")
         filename = Path(file.filename or "").name
         if Path(filename).suffix.lower() != ".xlsx":
@@ -254,10 +384,10 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
     def update_project(
         project_code: str,
         update: ProjectUpdate,
-        role: str = Query(...),
+        role: str = Depends(caller_role),
     ) -> dict:
         """Immediately update mutable project fields and create an audit record."""
-        _validate_role(role)
+        require_project_access(project_code)
         _require_role(role, PROJECT_UPDATE_ROLES, "This role cannot update projects")
         try:
             return runtime.repository.update_project(
@@ -275,10 +405,9 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
     def update_change_request(
         change_id: str,
         draft: ProjectDraft,
-        role: str = Query(...),
+        role: str = Depends(caller_role),
     ) -> dict:
         """Apply validated form edits to one pending project import."""
-        _validate_role(role)
         _require_role(role, CHANGE_PREVIEW_ROLES, "This role cannot edit project changes")
         existing = runtime.repository.find_project(draft.code, "admin")
         if existing:
@@ -300,31 +429,31 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.get("/api/summary")
-    def summary(role: str = Query("project_manager")) -> dict:
-        _validate_role(role)
+    def summary(role: str = Depends(caller_role)) -> dict:
         return runtime.repository.portfolio_summary(role)
 
     @app.post("/api/query")
-    def query(payload: QueryRequest) -> dict:
+    async def query(payload: QueryRequest, role: str = Depends(caller_role)) -> dict:
         trace = RequestTrace()
+        if payload.project_code:
+            require_project_access(payload.project_code)
         try:
-            _validate_role(payload.user_role)
             trace.event(
                 "query_received",
-                role=payload.user_role,
+                role=role,
                 project_code=payload.project_code,
                 query_preview=sanitize(payload.query),
             )
             trace.event(
                 "query_validated",
-                role=payload.user_role,
+                role=role,
                 project_code=payload.project_code,
                 query_length=len(payload.query),
                 history_count=len(payload.history),
             )
-            result = runtime.orchestrator.run(
+            result = await runtime.orchestrator.run_async(
                 payload.query.strip(),
-                payload.user_role,
+                role,
                 payload.project_code,
                 trace,
                 [message.model_dump() for message in payload.history],
@@ -360,10 +489,12 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             ) from error
 
     @app.post("/api/query/stream")
-    async def query_stream(payload: QueryRequest) -> StreamingResponse:
+    async def query_stream(
+        payload: QueryRequest, request: Request, role: str = Depends(caller_role)
+    ) -> StreamingResponse:
         """Stream real orchestration states and a final backward-compatible answer."""
-        _validate_role(payload.user_role)
-
+        if payload.project_code:
+            require_project_access(payload.project_code)
         def encode(event_name: str, data: dict) -> str:
             return f"event: {event_name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -375,55 +506,54 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
         async def generate():
             trace = RequestTrace()
-            loop = asyncio.get_running_loop()
-            statuses: asyncio.Queue[str] = asyncio.Queue()
-            last_state: str | None = None
-
-            def report(state: str) -> None:
-                loop.call_soon_threadsafe(statuses.put_nowait, state)
-
-            trace.event("query_received", role=payload.user_role,
+            trace.event("query_received", role=role,
                         project_code=payload.project_code,
                         query_preview=sanitize(payload.query))
-            trace.event("query_validated", role=payload.user_role,
+            trace.event("query_validated", role=role,
                         project_code=payload.project_code,
                         query_length=len(payload.query), history_count=len(payload.history))
             yield encode("meta", {"request_id": trace.request_id})
             yield encode("status", {"state": "thinking", "label": "Thinking"})
+            event_stream = runtime.orchestrator.stream(
+                payload.query.strip(), role, payload.project_code, trace,
+                [message.model_dump() for message in payload.history],
+            )
+            iterator = event_stream.__aiter__()
+            next_event: asyncio.Task | None = None
             try:
-                task = asyncio.create_task(asyncio.to_thread(
-                    runtime.orchestrator.run,
-                    payload.query.strip(), payload.user_role, payload.project_code, trace,
-                    [message.model_dump() for message in payload.history], report,
-                ))
-                while not task.done():
-                    try:
-                        state = await asyncio.wait_for(statuses.get(), timeout=.1)
-                    except asyncio.TimeoutError:
+                next_event = asyncio.create_task(anext(iterator))
+                while True:
+                    done, _ = await asyncio.wait({next_event}, timeout=15)
+                    if not done:
+                        if await request.is_disconnected():
+                            next_event.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await next_event
+                            return
+                        yield ": keep-alive\n\n"
                         continue
-                    if state != last_state:
-                        last_state = state
-                        yield encode("status", {
-                            "state": state,
-                            "label": labels.get(state, "Thinking"),
-                        })
-                result = await task
-                while not statuses.empty():
-                    state = statuses.get_nowait()
-                    if state != last_state:
-                        last_state = state
-                        yield encode("status", {
-                            "state": state,
-                            "label": labels.get(state, "Thinking"),
-                        })
-                result.update(request_id=trace.request_id, duration_ms=trace.duration_ms)
-                trace.event("response_generated", provider=result["mode"],
-                            agent_route=result.get("agent_route", []),
-                            citation_count=len(result.get("citations", [])),
-                            response_preview=sanitize(result.get("answer", "")))
-                yield encode("final", result)
-                trace.event("response_sent", status=200, provider=result["mode"],
-                            agent_route=result.get("agent_route", []))
+                    try:
+                        event_name, data = next_event.result()
+                    except StopAsyncIteration:
+                        break
+                    if event_name == "status":
+                        data["label"] = labels.get(data.get("state"), data.get("label", "Thinking"))
+                    elif event_name == "final":
+                        data.update(request_id=trace.request_id, duration_ms=trace.duration_ms)
+                        trace.event("response_generated", provider=data["mode"],
+                                    agent_route=data.get("agent_route", []),
+                                    citation_count=len(data.get("citations", [])),
+                                    response_preview=sanitize(data.get("answer", "")),
+                                    time_to_first_token_ms=data.get("time_to_first_token_ms"))
+                    elif event_name == "error":
+                        data["request_id"] = trace.request_id
+                    yield encode(event_name, data)
+                    if event_name == "final":
+                        trace.event("response_sent", status=200, provider=data["mode"],
+                                    agent_route=data.get("agent_route", []))
+                    if event_name == "error":
+                        return
+                    next_event = asyncio.create_task(anext(iterator))
             except Exception as error:
                 logging.getLogger("prosight").exception(
                     "query_stream_failed", extra={"event_data": {
@@ -434,19 +564,29 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
                 yield encode("error", {
                     "message": "The Assistant could not complete the request.",
                     "request_id": trace.request_id,
+                    "partial": False,
                 })
+            finally:
+                if next_event and not next_event.done():
+                    next_event.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await next_event
+                await event_stream.aclose()
 
         return StreamingResponse(generate(), media_type="text/event-stream", headers={
-            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
         })
 
     @app.post("/api/uploads", status_code=202)
     def upload(
         project_code: str = Form(...),
-        user_role: str = Form("project_manager"),
         file: UploadFile = File(...),
+        user_role: str = Depends(caller_role),
     ) -> dict:
-        _validate_role(user_role)
+        _require_role(user_role, {"project_manager", "planning_engineer", "admin"}, "This role cannot upload documents or data")
+        require_project_access(project_code)
         if not runtime.ingestion:
             raise HTTPException(
                 status_code=503,
@@ -469,9 +609,8 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.get("/api/ingestion-jobs/{job_id}")
     def ingestion_job(
-        job_id: str, role: str = Query(...),
+        job_id: str, role: str = Depends(caller_role),
     ) -> dict:
-        _validate_role(role)
         job = runtime.repository.get_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Ingestion job not found")
@@ -481,10 +620,10 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
     def confirm_document_date(
         job_id: str,
         confirmation: DocumentDateConfirmation,
-        role: str = Query(...),
+        role: str = Depends(caller_role),
     ) -> dict:
         """Confirm the PDF reporting date and resume indexing."""
-        _validate_role(role)
+        _require_role(role, {"project_manager", "planning_engineer", "admin"}, "This role cannot modify document ingestion")
         if not runtime.ingestion:
             raise HTTPException(status_code=503, detail="RAG runtime unavailable")
         try:
@@ -499,25 +638,24 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.get("/api/projects/{project_code}/documents")
-    def documents(project_code: str, role: str = Query("project_manager")) -> list[dict]:
-        _validate_role(role)
+    def documents(project_code: str, role: str = Depends(caller_role)) -> list[dict]:
+        require_project_access(project_code)
         if not runtime.repository.find_project(project_code, role):
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         return runtime.repository.list_documents(project_code)
 
     @app.get("/api/projects/{project_code}/ingestion-jobs")
     def project_ingestion_jobs(
-        project_code: str, role: str = Query("project_manager")
+        project_code: str, role: str = Depends(caller_role)
     ) -> list[dict]:
-        _validate_role(role)
+        require_project_access(project_code)
         if not runtime.repository.find_project(project_code, role):
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         return runtime.repository.list_jobs(project_code)
 
     @app.delete("/api/ingestion-jobs/{job_id}")
-    def clear_failed_ingestion_job(job_id: str, role: str = Query(...)) -> dict:
+    def clear_failed_ingestion_job(job_id: str, role: str = Depends(caller_role)) -> dict:
         """Permanently clear one failed upload after project and role authorization."""
-        _validate_role(role)
         _require_role(
             role, {"project_manager", "planning_engineer", "admin"},
             "This role cannot clear failed ingestion jobs",
@@ -557,10 +695,9 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.post("/api/portfolio-imports")
     def portfolio_import(
-        role: str = Form(...), dataset: str = Form("combined"),
-        project_code: str | None = Form(None), file: UploadFile = File(...)
+        dataset: str = Form("combined"), project_code: str | None = Form(None),
+        file: UploadFile = File(...), role: str = Depends(caller_role),
     ) -> dict:
-        _validate_role(role)
         _require_role(
             role, {"project_manager", "planning_engineer", "admin"},
             "This role cannot import portfolio data",
@@ -570,6 +707,7 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         if dataset == "schedule":
             if not project_code:
                 raise HTTPException(status_code=400, detail="Select a project for the schedule import")
+            require_project_access(project_code)
             if not runtime.repository.find_project(project_code, role):
                 raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         filename = Path(file.filename or "").name
@@ -588,10 +726,22 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             PORTFOLIO_DIR.mkdir(parents=True, exist_ok=True)
             destination = PORTFOLIO_DIR / f"{uuid.uuid4()}-{filename}"
             shutil.copy2(temp_path, destination)
-            record = runtime.repository.create_portfolio_import(
-                filename, checksum, str(destination), role, dataset, project_code
-            )
             try:
+                record = runtime.repository.create_portfolio_import(
+                    filename, checksum, str(destination), role, dataset, project_code
+                )
+            except SupabaseError as error:
+                safe_detail = sanitize(str(error), 300)
+                raise HTTPException(
+                    status_code=503 if error.status == 503 else 502,
+                    detail={
+                        "message": f"Supabase could not start the portfolio import: {safe_detail}"
+                    },
+                ) from error
+            store_file = getattr(runtime.repository, "store_portfolio_file", None)
+            try:
+                if store_file:
+                    store_file(record, destination)
                 parsed = parse_portfolio_workbook(
                     destination, runtime.repository.resolve_project_reference,
                     dataset, project_code
@@ -602,6 +752,23 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
                 raise HTTPException(
                     status_code=400,
                     detail={"message": str(error), "import": failed},
+                ) from error
+            except SupabaseError as error:
+                safe_detail = sanitize(str(error), 300)
+                logging.getLogger("prosight.portfolio").error(
+                    "portfolio_import_supabase_failed",
+                    extra={"event_data": {
+                        "import_id": record["id"], "supabase_status": error.status,
+                        "detail": safe_detail,
+                    }},
+                )
+                message = f"Supabase could not store the portfolio data: {safe_detail}"
+                failed = {}
+                with suppress(SupabaseError):
+                    failed = runtime.repository.fail_portfolio_import(record["id"], message)
+                raise HTTPException(
+                    status_code=503 if error.status == 503 else 502,
+                    detail={"message": message, "import": failed},
                 ) from error
             except Exception as error:
                 logging.getLogger("prosight.portfolio").exception(
@@ -617,9 +784,8 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.get("/api/portfolio-imports/template")
     def portfolio_import_template(
-        role: str = Query(...), dataset: str = Query("combined")
+        dataset: str = Query("combined"), role: str = Depends(caller_role)
     ) -> FileResponse:
-        _validate_role(role)
         if dataset not in {"combined", "manpower", "invoices", "schedule"}:
             raise HTTPException(status_code=400, detail="Unsupported portfolio template dataset")
         PORTFOLIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -635,47 +801,173 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         )
 
     @app.get("/api/portfolio-imports/{import_id}")
-    def portfolio_import_status(import_id: str, role: str = Query(...)) -> dict:
-        _validate_role(role)
+    def portfolio_import_status(import_id: str, role: str = Depends(caller_role)) -> dict:
         record = runtime.repository.get_portfolio_import(import_id)
         if not record:
             raise HTTPException(status_code=404, detail="Portfolio import not found")
-        if role != "admin" and record["uploaded_by"] != role:
+        auth = current_auth.get()
+        if role != "admin" and auth and record["uploaded_by"] != auth.user_id:
             raise HTTPException(status_code=403, detail="Portfolio import is restricted")
         return record
 
     @app.get("/api/portfolio/manpower")
     def portfolio_manpower(
-        role: str = Query(...), project_code: str | None = Query(None),
+        project_code: str | None = Query(None),
         search: str | None = Query(None), department: str | None = Query(None),
         category: str | None = Query(None), status: str | None = Query(None),
-        location: str | None = Query(None),
+        location: str | None = Query(None), role: str = Depends(caller_role),
     ) -> list[dict]:
-        _validate_role(role)
+        if project_code:
+            require_project_access(project_code)
         if project_code and not runtime.repository.find_project(project_code, role):
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         return runtime.repository.list_manpower(
             project_code, search, department, category, status, location
         )
 
+    @app.post("/api/portfolio/manpower/export")
+    def export_portfolio_manpower(
+        export: ManpowerExportRequest,
+        role: str = Depends(caller_role),
+    ) -> StreamingResponse:
+        """Export only RLS-visible employees with a validated temporary scenario."""
+        requested_codes = list(dict.fromkeys(code.strip() for code in export.employee_codes if code.strip()))
+        if not requested_codes:
+            raise HTTPException(status_code=400, detail="At least one employee is required")
+
+        authorized = {
+            str(item.get("emp_code")): dict(item)
+            for item in runtime.repository.list_manpower()
+        }
+        if any(code not in authorized for code in requested_codes):
+            raise HTTPException(status_code=403, detail="The export includes inaccessible manpower records")
+
+        change_by_code: dict[str, ManpowerScenarioChange] = {}
+        project_names: dict[str, str] = {}
+        for change in export.scenario_changes:
+            if change.emp_code not in authorized:
+                raise HTTPException(status_code=403, detail="The scenario includes inaccessible manpower records")
+            if change.emp_code in change_by_code:
+                raise HTTPException(status_code=400, detail="Scenario employee codes must be unique")
+            if change.target_project_code:
+                project = runtime.repository.find_project(change.target_project_code, role)
+                if not project:
+                    raise HTTPException(status_code=403, detail="The scenario includes an inaccessible target project")
+                project_names[change.target_project_code] = project["name"]
+            change_by_code[change.emp_code] = change
+
+        baseline = [authorized[code] for code in requested_codes]
+        scenario: list[dict] = []
+        for source in baseline:
+            item = dict(source)
+            change = change_by_code.get(str(item.get("emp_code")))
+            if change:
+                if change.workforce_state == "allocated":
+                    item.update(
+                        current_project_code=change.target_project_code,
+                        current_project=project_names[change.target_project_code],
+                        allocation="Allocated",
+                    )
+                    if _manpower_state(source) == "on_leave":
+                        item["status"] = "Active"
+                elif change.workforce_state == "on_leave":
+                    item.update(status="On Leave", allocation="On Leave")
+                else:
+                    item.update(
+                        current_project_code=None,
+                        current_project="Not allocated",
+                        status="Available",
+                        allocation="Not Allocated",
+                    )
+            item["workforce_state"] = _manpower_state(item)
+            scenario.append(item)
+
+        workbook = Workbook()
+        register = workbook.active
+        register.title = "Filtered Manpower"
+        columns = [
+            ("EMP Code", "emp_code"), ("Name", "name"),
+            ("Designation", "designation"), ("Department", "department"),
+            ("Category", "category"), ("Current Project", "current_project"),
+            ("Project Code", "current_project_code"),
+            ("Current Location", "current_location"),
+            ("Workforce State", "workforce_state"),
+            ("Allocation", "allocation"), ("Status", "status"),
+            ("Leave Balance", "leave_balance"), ("Remarks", "remarks"),
+        ]
+        register.append([label for label, _ in columns])
+        for item in scenario:
+            register.append([
+                _excel_safe(
+                    str(item.get(field)).replace("_", " ").title()
+                    if field == "workforce_state" else item.get(field)
+                )
+                for _, field in columns
+            ])
+        register.freeze_panes = "A2"
+        register.auto_filter.ref = register.dimensions
+
+        changes_sheet = workbook.create_sheet("Scenario Changes")
+        changes_sheet.append(["EMP Code", "Name", "Baseline Project", "Proposed Project", "Proposed State"])
+        for code in requested_codes:
+            change = change_by_code.get(code)
+            if not change:
+                continue
+            source = authorized[code]
+            changes_sheet.append([
+                _excel_safe(code), _excel_safe(source.get("name")),
+                _excel_safe(source.get("current_project") or source.get("current_project_code")),
+                _excel_safe(project_names.get(change.target_project_code or "") or source.get("current_project")),
+                change.workforce_state.replace("_", " ").title(),
+            ])
+        changes_sheet.freeze_panes = "A2"
+
+        summary = workbook.create_sheet("Scenario Summary")
+        summary.append(["Metric", "Baseline", "Scenario", "Change"])
+        for state, label in (
+            ("total", "Total Employees"), ("allocated", "Allocated"),
+            ("on_leave", "On Leave"), ("not_allocated", "Not Allocated"),
+        ):
+            before = len(baseline) if state == "total" else sum(_manpower_state(item) == state for item in baseline)
+            after = len(scenario) if state == "total" else sum(item["workforce_state"] == state for item in scenario)
+            summary.append([label, before, after, after - before])
+
+        for sheet in workbook.worksheets:
+            for cell in sheet[1]:
+                cell.font = Font(bold=True)
+            for column in sheet.columns:
+                width = min(42, max(12, max(len(str(cell.value or "")) for cell in column) + 2))
+                sheet.column_dimensions[column[0].column_letter].width = width
+
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="ProSight-Manpower-Scenario.xlsx"'},
+        )
+
     @app.get("/api/projects/{project_code}/schedule")
-    def project_schedule(project_code: str, role: str = Query(...)) -> list[dict]:
-        _validate_role(role)
+    def project_schedule(project_code: str, role: str = Depends(caller_role)) -> list[dict]:
+        require_project_access(project_code)
         if not runtime.repository.find_project(project_code, role):
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         return runtime.repository.list_project_schedule(project_code)
 
     @app.get("/api/portfolio/invoices")
     def portfolio_invoices(
-        role: str = Query(...), project_code: str | None = Query(None),
+        project_code: str | None = Query(None),
         status: str | None = Query(None), level: str | None = Query(None),
         approval_status: str | None = Query(None),
         payment_status: str | None = Query(None),
         risk_profile: str | None = Query(None),
         date_from: str | None = Query(None), date_to: str | None = Query(None),
         minimum_aging_days: int | None = Query(None, ge=0),
+        role: str = Depends(caller_role),
     ) -> list[dict]:
-        _validate_role(role)
+        if project_code:
+            require_project_access(project_code)
         if project_code and not runtime.repository.find_project(project_code, role):
             raise HTTPException(status_code=404, detail="Project not found or unauthorized")
         return runtime.repository.list_invoices(
@@ -684,13 +976,11 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
         )
 
     @app.get("/api/portfolio/invoice-pivot")
-    def portfolio_invoice_pivot(role: str = Query(...)) -> list[dict]:
-        _validate_role(role)
+    def portfolio_invoice_pivot(role: str = Depends(caller_role)) -> list[dict]:
         return runtime.repository.invoice_pivot()
 
     @app.delete("/api/documents/{document_id}")
-    def delete_document(document_id: str, role: str = Query(...)) -> dict:
-        _validate_role(role)
+    def delete_document(document_id: str, role: str = Depends(caller_role)) -> dict:
         _require_role(role, {"admin"}, "Only Admin can delete documents")
         if not runtime.ingestion:
             raise HTTPException(status_code=503, detail="RAG runtime unavailable")
@@ -702,8 +992,7 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
     @app.get("/api/change-requests/{change_id}")
-    def change_request(change_id: str, role: str = Query("project_manager")) -> dict:
-        _validate_role(role)
+    def change_request(change_id: str, role: str = Depends(caller_role)) -> dict:
         change = runtime.repository.get_change_request(change_id)
         if not change:
             raise HTTPException(status_code=404, detail="Change request not found")
@@ -711,29 +1000,26 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
 
     @app.get("/api/notifications")
     def notifications(
-        role: str = Query(...), status: Literal["unread", "all"] = Query("all")
+        status: Literal["unread", "all"] = Query("all"),
+        role: str = Depends(caller_role),
     ) -> dict:
-        _validate_role(role)
         return runtime.repository.list_notifications(role, status == "unread")
 
     @app.post("/api/notifications/{notification_id}/read")
-    def read_notification(notification_id: str, role: str = Query(...)) -> dict:
-        _validate_role(role)
+    def read_notification(notification_id: str, role: str = Depends(caller_role)) -> dict:
         try:
             return runtime.repository.mark_notification_read(notification_id, role)
         except KeyError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
     @app.post("/api/notifications/read-all")
-    def read_all_notifications(role: str = Query(...)) -> dict:
-        _validate_role(role)
+    def read_all_notifications(role: str = Depends(caller_role)) -> dict:
         return {"updated": runtime.repository.mark_all_notifications_read(role)}
 
     @app.get("/api/approvals")
     def approvals(
-        role: str = Query(...), status: Literal["pending"] = Query("pending")
+        status: Literal["pending"] = Query("pending"), role: str = Depends(caller_role),
     ) -> dict:
-        _validate_role(role)
         _require_role(role, {"admin"}, "Only Admin can access the approval queue")
         return {"items": runtime.repository.list_pending_approvals()}
 
@@ -741,14 +1027,21 @@ def create_app(repository: ProjectRepository | None = None) -> FastAPI:
     def decide_change(
         change_id: str,
         decision: Literal["approve", "reject"],
-        role: str = Query(...),
+        role: str = Depends(caller_role),
     ) -> dict:
-        _validate_role(role)
         _require_role(role, {"admin"}, "Only Admin can approve or reject changes")
         try:
-            return runtime.repository.decide_change_request(
+            change = runtime.repository.get_change_request(change_id)
+            if not change:
+                raise KeyError("Change request not found")
+            result = runtime.repository.decide_change_request(
                 change_id, "approved" if decision == "approve" else "rejected", role
             )
+            if decision == "approve" and change["action"] == "pdf_ingestion":
+                if not runtime.ingestion:
+                    raise ValueError("RAG runtime unavailable")
+                runtime.ingestion.resume_approved_pdf(change["payload"]["job_id"])
+            return result
         except PermissionError as error:
             raise HTTPException(status_code=403, detail=str(error)) from error
         except KeyError as error:

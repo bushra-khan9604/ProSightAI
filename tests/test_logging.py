@@ -47,7 +47,6 @@ class LoggingTests(unittest.TestCase):
                 client = TestClient(create_app(repository))
                 response = client.post("/api/query", json={
                     "query": "Who is the manager for Marina Heights?",
-                    "user_role": "project_manager",
                     "project_code": "PRJ-2024-001",
                 })
                 self.assertEqual(200, response.status_code)
@@ -65,7 +64,7 @@ class LoggingTests(unittest.TestCase):
                 events = [record["event"] for record in request_records]
                 expected = [
                     "query_received", "query_validated", "orchestration_planned",
-                    "database_query_completed",
+                    "database_query_completed", "evidence_collected",
                     "provider_selected", "response_generated", "response_sent",
                 ]
                 self.assertEqual(expected, events)

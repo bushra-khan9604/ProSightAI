@@ -1,125 +1,81 @@
 # ProSight AI architecture
 
-## 1. Recommended production architecture
+## Runtime flow
 
 ```mermaid
 flowchart LR
-  U["Web / Teams / Mobile"] --> G["API gateway + SSO"]
-  G --> A["ProSight agent orchestrator"]
-  A --> P["Policy and role filter"]
-  A --> T["Structured-data tools"]
-  A --> R["Document retrieval"]
-  T --> D[("Project + employee database")]
-  R --> V[("Vector index")]
-  R --> O[("Document object store")]
-  A --> L["LLM via Responses API"]
-  A --> C[("Conversation + citation store")]
-  G --> X[("Audit log / monitoring")]
+  U["React landing + protected app"] -->|"Supabase session JWT"| A["FastAPI agent API"]
+  A -->|"caller JWT / RLS"| P[("Supabase PostgreSQL")]
+  A -->|"private object keys"| S[("Supabase Storage")]
+  A --> O["Deterministic query router"]
+  O --> D["Database Manager"]
+  O --> R["RAG retrieval"]
+  D --> W["OpenAI Writer Agent"]
+  R --> W
+  W -->|"SSE text deltas"| U
+  A -->|"document + query batches"| E["OpenAI Embeddings"]
+  A -->|"caller JWT + security-invoker RPC"| P
 ```
 
-The model does not connect directly to databases. It can only call narrow,
-read-only tools. Each tool applies project membership, role, and field-level
-authorization before returning data. The final answer includes evidence IDs.
+FastAPI verifies each access token against the Supabase project JWKS, loads the
+RLS-visible profile and memberships, and installs one request-scoped
+`AuthContext`. API payloads cannot select or override a role. Structured reads
+use the caller JWT; narrowly scoped ingestion state, approved mutations,
+migration, audit, and embedding work use server credentials after API policy
+checks.
 
-## 2. Three knowledge bases
+Assistant requests use deterministic routing rather than an additional manager
+model call. For mixed questions, the Database Manager and RAG retrieval execute
+concurrently, then a single Writer Agent receives the typed, bounded evidence
+packet. The Writer is the only model whose text is exposed, and its output is
+streamed to React as SSE deltas before the final citations and timing metadata.
 
-The lifecycle categories need distinct retrieval rules even when they share
-infrastructure.
+## Data and access model
 
-| Knowledge base | Typical sources | Update pattern | Important rules |
-|---|---|---|---|
-| Active | daily reports, schedule, RFIs, manpower/equipment logs | hourly/daily | prefer latest approved revision; show data timestamp |
-| Completed | as-built drawings, handover pack, lessons learned, final account | mostly immutable | preserve document revision and closeout approval |
-| Future | tender, estimate, bid clarifications, resource forecast | event driven | tighter confidentiality; separate bid teams |
+`profiles` is keyed to `auth.users`. New users receive the `employee` role and
+memberships for every current project in the same signup transaction. A project
+insert grants all employees access to the new project. Administrators bypass
+project membership for portfolio operations; other roles require a row in
+`project_memberships`.
 
-Use metadata filters (`company_id`, `project_id`, `lifecycle`, `document_type`,
-`revision`, `approved`, `effective_date`, `security_classification`) before
-semantic/vector retrieval. Never blend one project's evidence into another.
+RLS is enabled on all user-facing tables. Employees are read-only and contact
+values are masked before they enter agent context or API responses. Project
+authors can upload and update within their memberships. Destructive document
+operations are administrator-only, and project deletion remains an approved
+server-side change rather than a direct table delete. Notifications are owned
+by `recipient_user_id`; changes and imports retain user ownership; audits retain
+both actor user ID and the role snapshot at action time.
 
-## 3. Data model
+Storage is private. Project object keys are
+`<project-code>/<document-id>/<filename>` and portfolio object keys are
+`<user-id>/<import-id>/<filename>`. Storage RLS derives its scope from the
+leading path segment.
 
-Core entities:
+## RAG foundation
 
-- `projects`: code, status, client, contract value, planned/revised dates.
-- `progress_snapshots`: baseline, revised, actual, variance, reporting date.
-- `employees`: company directory and contact fields.
-- `project_assignments`: person, project, project role, start/end dates.
-- `activities`, `manpower`, `equipment`, `manhours`, `milestones`.
-- `documents` and `document_chunks`: source, revision, text, access metadata.
-- `audit_events`: user, query, tools, project IDs, response, timestamp.
+`document_chunks` stores document/project IDs, filename, one-based page and
+chunk numbers, content hash, effective date, metadata, token count, embedding
+model/version/status, generated full-text vector, and `halfvec(1536)`.
 
-Derived calculations must be deterministic:
+PDF extraction never crosses page boundaries. Long pages are split into
+overlapping token-aware sections after repeated headers and footers are removed.
+Every PDF upload passes through an explicit Admin approval gate after validation
+and reporting-date resolution, regardless of the uploader's role.
+The bounded FastAPI executor restores source files from private Storage, batches
+up to 64 inputs with `text-embedding-3-small`, uses explicit 1536 dimensions,
+and applies bounded exponential retries. Content hashes let a restarted job skip
+completed chunks, and the parent document/job is published atomically.
 
-- `delay_days = max(0, revised_finish - planned_finish)`.
-- `variance_pct = actual_progress_pct - revised_progress_pct`.
-- Currency is stored as integer minor units in production.
+`hybrid_search` independently ranks full-text and cosine candidates, combines
+them with reciprocal-rank fusion, adds a small effective-date preference, and
+filters by ready document state, project code, and RLS membership before
+returning evidence. FastAPI creates query embeddings with the same model and
+calls the RPC with the caller JWT, preserving project-scoped RLS.
 
-## 4. Query flow
+## Migration and cutover
 
-1. Authenticate with company SSO; obtain user identity, role, and projects.
-2. Classify the request and extract project/status/time filters.
-3. Authorize before retrieval.
-4. Call structured tools for facts and document retrieval for narrative claims.
-5. Generate an answer only from returned context.
-6. Attach citations, data freshness, and a clear “not found” response.
-7. Log tool calls and accessed project IDs without logging unnecessary PII.
-
-## 5. Access policy
-
-Suggested roles:
-
-- `executive`: portfolio totals and all projects; business contacts.
-- `project_manager`: assigned and supervised projects; full project contacts.
-- `employee`: approved project facts; contact details masked.
-- `bid_team`: future projects explicitly assigned to that bid team.
-- `admin`: configuration and audit access, not automatically business-data access.
-
-Enforce authorization inside the data service, not only in prompts. Encrypt
-contact fields, use short-lived identity tokens, redact PII in telemetry, and
-require an explicit reason for bulk directory exports.
-
-## 6. Ingestion pipeline
-
-1. Connect SharePoint/Drive/document systems and project databases.
-2. Virus-scan, OCR, classify, and extract text/tables.
-3. Resolve project and revision metadata; quarantine ambiguous documents.
-4. Split by headings/tables, create embeddings, and index with ACL metadata.
-5. Re-index only approved revisions; retain superseded versions for audit.
-6. Run quality checks for dates, totals, duplicate people, and inconsistent units.
-
-## 7. Production components
-
-- API: FastAPI/.NET with OIDC, rate limiting, and request IDs.
-- Data: PostgreSQL; object storage; managed vector search or `pgvector`.
-- Jobs: queue-based ingestion and scheduled source reconciliation.
-- Agent: OpenAI Responses API function calling with strict JSON schemas.
-- Observability: traces, retrieval/tool metrics, answer feedback, audit export.
-
-The prototype uses SQLite and a zero-dependency HTTP server so it can run
-immediately. Replace those adapters without changing the agent's tool contract.
-
-## 8. Evaluation and rollout
-
-Start with a 50–100 question golden set covering exact facts, ambiguous project
-names, access denial, outdated revisions, calculations, and “not in source.”
-Track factual accuracy, citation correctness, authorization leakage, latency,
-and cost. Roll out read-only to one active project first, then completed
-projects, then confidential future work.
-# Multi-agent document intelligence
-
-The Main Orchestrator is the only conversation owner. It plans each query and
-invokes the Database Manager Agent, RAG Agent, and Writer Agent as bounded tools.
-Specialists cannot call each other. The Writer is the only specialist allowed
-to produce user-facing prose.
-
-PDF uploads are stored by project, extracted page-by-page, chunked, embedded
-with `text-embedding-3-small`, and indexed in a persistent local Chroma
-collection. Retrieval always includes a project-code filter and returns page
-citations. Excel imports are validated into a change preview and cannot mutate
-SQLite until an Admin approves the pending request.
-
-FastAPI exposes query, upload, job, document, and approval resources. SQLite
-persists workflow state and audit events; a bounded in-process worker handles
-the portfolio deployment. Production evolution should replace the role selector
-with SSO, SQLite with PostgreSQL, local files with object storage, and the local
-worker with a durable queue.
+The SQLite migrator is repeatable and uses stable IDs/upserts. It converts role
+strings to user ownership, uploads legacy files, downloads them for SHA-256
+comparison, and reports source/migrated/target counts. Production remains on
+the old read-only source until the verification gate passes; no dual writes are
+introduced. The detailed process is in `docs/supabase-rollout.md`.

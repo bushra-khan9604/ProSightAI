@@ -5,10 +5,12 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import re
 
 from openpyxl import Workbook, load_workbook
 
 from prosight.ingestion.portfolio import (
+    INVOICE_FIELD_MAP,
     INVOICE_HEADERS,
     MANPOWER_HEADERS,
     SCHEDULE_HEADERS,
@@ -16,7 +18,9 @@ from prosight.ingestion.portfolio import (
     parse_portfolio_workbook,
 )
 from prosight.agents.database_manager import DatabaseManagerAgent
+from prosight.portfolio_contract import INVOICE_DB_COLUMNS, MANPOWER_DB_COLUMNS
 from prosight.repository import DEFAULT_DATA, ProjectRepository
+from prosight.supabase_repository import SupabaseProjectRepository
 
 
 class PortfolioImportTests(unittest.TestCase):
@@ -84,6 +88,89 @@ class PortfolioImportTests(unittest.TestCase):
         self.assertEqual("Above 121 Days", invoices[0]["aging_of_approval"])
         self.assertEqual("Above 121 Days", invoices[0]["aging_(ref)"])
         self.assertEqual(1250, self.repository.invoice_pivot()[0]["grand_total"])
+
+    def test_every_invoice_header_has_a_clean_typed_database_column(self):
+        self.assertEqual(set(INVOICE_HEADERS), set(INVOICE_FIELD_MAP))
+        self.assertEqual(44, len(set(INVOICE_FIELD_MAP.values())))
+        self.assertEqual(
+            set(INVOICE_FIELD_MAP.values()), set(INVOICE_DB_COLUMNS) - {"project_code"}
+        )
+        self.assertTrue(all(
+            re.fullmatch(r"[a-z][a-z0-9_]*", column)
+            for column in INVOICE_FIELD_MAP.values()
+        ))
+
+    def test_identifier_number_format_preserves_leading_zeroes(self):
+        path = self.workbook()
+        workbook = load_workbook(path)
+        try:
+            invoice = workbook["Projects Invoices"]
+            invoice["E2"] = 1234
+            invoice["E2"].number_format = "000000"
+            workbook.save(path)
+        finally:
+            workbook.close()
+        parsed = parse_portfolio_workbook(
+            path, self.repository.resolve_project_reference, "invoices"
+        )
+        self.assertEqual("001234", parsed["invoices"][0]["sap_po_number"])
+
+    def test_required_formula_without_cached_value_has_actionable_error(self):
+        path = self.workbook()
+        workbook = load_workbook(path)
+        try:
+            invoice = workbook["Projects Invoices"]
+            invoice["K2"] = "=1000+250"
+            workbook.save(path)
+        finally:
+            workbook.close()
+        with self.assertRaisesRegex(ValueError, "formula has no cached value"):
+            parse_portfolio_workbook(
+                path, self.repository.resolve_project_reference, "invoices"
+            )
+
+    def test_supabase_payload_is_whitelisted_and_counts_updates(self):
+        parsed = parse_portfolio_workbook(
+            self.workbook(), self.repository.resolve_project_reference
+        )
+
+        class FakeService:
+            def __init__(self):
+                self.requests = []
+                self.summary = None
+
+            def select_all(self, table, **_filters):
+                return [{"emp_code": "EMP-001"}] if table == "manpower_assignments" else []
+
+            def request(self, method, path, payload, **_kwargs):
+                self.requests.append((method, path, payload))
+                return payload
+
+            def update(self, table, payload, **_filters):
+                if table == "portfolio_imports":
+                    self.summary = payload.get("summary_json")
+                return []
+
+        service = FakeService()
+        repository = SupabaseProjectRepository.__new__(SupabaseProjectRepository)
+        repository.service = service
+        repository.user = service
+        repository.invoice_pivot = lambda: []
+        repository.get_portfolio_import = lambda _import_id: {
+            "status": "completed", "summary": service.summary,
+        }
+        result = repository.apply_portfolio_import("import-1", parsed)
+        self.assertEqual({"inserted": 0, "updated": 1}, result["summary"]["manpower"])
+        self.assertEqual({"inserted": 1, "updated": 0}, result["summary"]["invoices"])
+        posted = {path.split("?")[0].rsplit("/", 1)[-1]: rows for _, path, rows in service.requests}
+        self.assertEqual(
+            set(MANPOWER_DB_COLUMNS) | {"data_json", "import_id", "updated_at"},
+            set(posted["manpower_assignments"][0]),
+        )
+        self.assertEqual(
+            set(INVOICE_DB_COLUMNS) | {"data_json", "import_id", "updated_at"},
+            set(posted["project_invoices"][0]),
+        )
 
     def test_legacy_pivot_sheet_is_ignored(self):
         parsed = parse_portfolio_workbook(
