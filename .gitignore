@@ -8,6 +8,8 @@ frontend/dist/
 .pnpm-store/
 logs/
 data/
+!frontend/src/public-site/data/
+!frontend/src/public-site/data/**
 tmp/
 output/
 outputs/
