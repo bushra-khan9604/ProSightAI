@@ -151,7 +151,7 @@ export const LoginPage = ({ initialMode = 'login', recovery = false, onRecoveryC
         </div>
       </main>
 
-      <footer className="relative z-10 text-center text-xs text-slate-400 py-2"><p>© {new Date().getFullYear()} ProSight AI Inc. All rights reserved.</p></footer>
+      <footer className="relative z-10 text-center text-xs text-slate-400 py-2"><p>© {new Date().getFullYear()} ProSight AI Inc.</p></footer>
     </div>
   );
 };

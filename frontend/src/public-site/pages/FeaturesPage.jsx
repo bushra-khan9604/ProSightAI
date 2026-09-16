@@ -64,7 +64,7 @@ export const FeaturesPage = ({ onGetStarted }) => {
       <div className="p-10 rounded-3xl bg-white border border-slate-200 shadow-xl text-center space-y-4">
         <h3 className="text-2xl font-bold text-slate-900">Ready to test these capabilities on your active site data?</h3>
         <p className="text-sm text-slate-600 max-w-xl mx-auto">
-          Start a 14-day risk-free trial and see how ProSight AI handles your Primavera schedules and PDF blueprints.
+          Start a risk-free trial and see how ProSight AI handles your Projects data.
         </p>
         <div className="pt-2">
           <Button variant="glow" size="lg" icon={ArrowRight} onClick={handleLaunchTrial}>

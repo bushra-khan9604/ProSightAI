@@ -113,10 +113,10 @@ export const WORKFLOW_STEPS = [
 ];
 
 export const METRICS_DATA = [
-  { value: 70, suffix: '%', label: 'Faster Decisions', subtext: 'Less time spent searching through scattered file folders and emails.' },
-  { value: 99, suffix: '%', label: 'Data Validation Accuracy', subtext: 'Automated verification of cross-referencing submittals & BOQs.' },
-  { value: 50, suffix: '%', label: 'Faster Project Reporting', subtext: 'Executive dashboards and variance briefs created automatically.' },
-  { value: 100, suffix: '%', label: 'Evidence-Based Decisions', subtext: 'Every insight links directly back to your source blueprint or spec page.' }
+  { value: 300, suffix: 'Pages', label: 'PDF Analysis Capacity', subtext: 'Process searchable project reports up to 300 pages while preserving page-level citations.' },
+  { value: 5, suffix: 'Areas', label: 'Project Controls Analysis', subtext: 'Analyze schedule, earned value, resources, cash flow, and risk exposure.' },
+  { value: 2, suffix: 'Formats', label: 'Automated Reporting', subtext: 'Generate governed project-control reports in PDF and Excel formats.' },
+  { value: 100, suffix: 'Page-Level', label: 'Traceable Evidence', subtext: 'Supported document findings link back to the originating file and page.' }
 ];
 
 export const DASHBOARD_DATA = {

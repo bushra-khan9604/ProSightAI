@@ -38,7 +38,7 @@ export const DemoModal = ({ isOpen, onClose, onOpenGetStarted }) => {
           </div>
 
           <h3 className="relative z-10 text-xl font-bold text-white mt-6">
-            Watch How ProSight AI Resolves Structural Delays in Real-Time
+            Stay Tuned to Watch How ProSight AI Resolves Structural Delays in Real-Time!
           </h3>
           <p className="relative z-10 text-xs text-slate-300 mt-2 max-w-md">
             Click play to see PDF blueprint ingestion, Primavera schedule cross-referencing, and automated RFI drafting in action.

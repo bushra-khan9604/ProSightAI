@@ -37,7 +37,7 @@ export const ContactPage = () => {
             <div className="space-y-4 text-sm text-slate-600">
               <div className="flex items-start gap-3">
                 <MapPin className="w-5 h-5 text-cyan-600 shrink-0 mt-0.5" />
-                <span>100 Construction Tech Boulevard, Suite 1400, San Francisco, CA 94105</span>
+                <span>Abu Dhabi, UAE</span>
               </div>
               <div className="flex items-center gap-3">
                 <Mail className="w-5 h-5 text-cyan-600 shrink-0" />
@@ -67,9 +67,9 @@ export const ContactPage = () => {
                 <div className="w-16 h-16 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-600 flex items-center justify-center mx-auto shadow-md">
                   <CheckCircle2 className="w-8 h-8" />
                 </div>
-                <h3 className="text-2xl font-bold text-slate-900">Inquiry Received!</h3>
+                <h3 className="text-2xl font-bold text-slate-900">Stay Tuned!</h3>
                 <p className="text-sm text-slate-600 max-w-sm mx-auto">
-                  Thank you, <span className="text-cyan-600 font-semibold">{formData.name}</span>. A senior construction solution engineer will contact you within 2 business hours.
+                  Thank you, <span className="text-cyan-600 font-semibold">{formData.name}</span>. This Module is being developed, Stay tuned for updates.
                 </p>
               </div>
             ) : (

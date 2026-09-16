@@ -33,7 +33,7 @@ export const GetStartedModal = ({ isOpen, onClose }) => {
         <div className="flex items-center justify-between border-b border-slate-200 pb-4">
           <div className="flex items-center gap-2 text-cyan-600 font-bold text-sm">
             <Sparkles className="w-4 h-4" />
-            <span>Start Your 14-Day Free Trial</span>
+            <span>Start Your Free Trial</span>
           </div>
           <button
             onClick={onClose}

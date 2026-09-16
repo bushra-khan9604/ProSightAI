@@ -84,7 +84,7 @@ export const ArchitectureFlow = () => {
   const dbCardRef = useRef(null);
   const projectCardRef = useRef(null);
   const writerCardRef = useRef(null);
-  const visionCardRef = useRef(null);
+  const plannerCardRef = useRef(null);
   const insightCardRef = useRef(null);
 
   const [svgDimensions, setSvgDimensions] = useState({ w: 1000, h: 620, orbX: 500, orbY: 310, orbR: 136 });
@@ -115,7 +115,7 @@ export const ArchitectureFlow = () => {
       database: dbCardRef,
       project: projectCardRef,
       writer: writerCardRef,
-      vision: visionCardRef,
+      planner: plannerCardRef,
       insight: insightCardRef
     };
 
@@ -148,8 +148,8 @@ export const ArchitectureFlow = () => {
         targetX = (cardRect.left - cRect.left) + 2;
         targetY = (cardRect.top + cardRect.height / 2) - cRect.top;
       }
-      // 5. Vision Agent (Middle-Right): left edge of card
-      else if (id === 'vision') {
+      // 5. Planner Agent (Middle-Right): left edge of card
+      else if (id === 'planner') {
         targetX = (cardRect.left - cRect.left) + 2;
         targetY = (cardRect.top + cardRect.height / 2) - cRect.top;
       }
@@ -166,7 +166,7 @@ export const ArchitectureFlow = () => {
 
       // Smooth Bezier curve control points matching 3rd and 4th image
       let pathStr;
-      if (id === 'database' || id === 'vision') {
+      if (id === 'database' || id === 'planner') {
         pathStr = `M ${endX.toFixed(1)} ${endY.toFixed(1)} L ${targetX.toFixed(1)} ${targetY.toFixed(1)}`;
       } else {
         const cp1X = endX + (targetX - endX) * 0.35;
@@ -254,8 +254,8 @@ export const ArchitectureFlow = () => {
       delay: 1.5
     },
     {
-      id: 'vision',
-      gradientId: 'grad-vision',
+      id: 'planner',
+      gradientId: 'grad-planner',
       strokeColor: '#f59e0b',
       dotColor: '#fb923c',
       path: 'M 636 310 L 680 310',
@@ -376,8 +376,8 @@ export const ArchitectureFlow = () => {
                 <stop offset="100%" stopColor="#2dd4bf" />
               </linearGradient>
 
-              {/* 5. Vision Agent - Amber / Orange */}
-              <linearGradient id="grad-vision" x1="100%" y1="0%" x2="0%" y2="0%">
+              {/* 5. Planner Agent - Amber / Orange */}
+              <linearGradient id="grad-planner" x1="100%" y1="0%" x2="0%" y2="0%">
                 <stop offset="0%" stopColor="#fb923c" />
                 <stop offset="100%" stopColor="#f59e0b" />
               </linearGradient>
@@ -721,26 +721,26 @@ export const ArchitectureFlow = () => {
                 </div>
               </motion.div>
 
-              {/* CARD 5: VISION AGENT (Middle Right) */}
+              {/* CARD 5: PLANNER AGENT (Middle Right) */}
               <motion.div 
-                onMouseEnter={() => setHoveredAgent('vision')}
+                onMouseEnter={() => setHoveredAgent('planner')}
                 onMouseLeave={() => setHoveredAgent(null)}
                 whileHover={{ y: -3 }}
                 transition={{ duration: 0.2, ease: 'easeOut' }}
                 className="relative flex items-center group -mr-6 cursor-pointer transition-all duration-300"
               >
-                <div ref={visionCardRef} className="w-[300px] bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-2xl p-5 pr-8 shadow-[0_4px_20px_rgba(15,23,42,0.04)] group-hover:border-amber-300 group-hover:shadow-[0_8px_25px_rgba(15,23,42,0.08)] transition-all duration-300">
+                <div ref={plannerCardRef} className="w-[300px] bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-2xl p-5 pr-8 shadow-[0_4px_20px_rgba(15,23,42,0.04)] group-hover:border-amber-300 group-hover:shadow-[0_8px_25px_rgba(15,23,42,0.08)] transition-all duration-300">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Camera className="w-4 h-4 text-amber-600 stroke-[2.2]" />
                       <h3 className="text-xs font-extrabold text-slate-900 tracking-wider uppercase">
-                        VISION AGENT
+                        PLANNER AGENT
                       </h3>
                     </div>
                     <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-amber-600 group-hover:translate-x-0.5 transition-all" />
                   </div>
                   <p className="text-xs text-slate-500 leading-snug mt-1 font-normal">
-                    Understands drawings, 3D BIM models & site conditions.
+                    Plans and organize construction activities.
                   </p>
                   <div className="mt-3.5 flex flex-wrap gap-1.5">
                     {['Plans', 'BIM', 'Photos'].map((tag) => (
@@ -753,7 +753,7 @@ export const ArchitectureFlow = () => {
                 <div className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-gradient-to-br from-slate-100 to-amber-50/80 border border-slate-200/90 shadow-xs flex items-center justify-center shrink-0 z-30 -ml-6 group-hover:shadow-sm transition-all duration-300">
                   <img 
                     src="/assets/vision-illustration.jpg" 
-                    alt="Vision Agent" 
+                    alt="Planner Agent" 
                     className="w-16 h-16 sm:w-20 sm:h-20 object-cover rounded-xl shadow-xs"
                   />
                 </div>
@@ -872,12 +872,12 @@ export const ArchitectureFlow = () => {
                 </div>
               </div>
 
-              {/* VISION AGENT */}
+              {/* PLANNER AGENT */}
               <div className="bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-2xl p-4.5 shadow-sm flex items-center gap-3">
-                <img src="/assets/vision-illustration.jpg" alt="Vision" className="w-14 h-14 object-cover rounded-xl shrink-0" />
+                <img src="/assets/vision-illustration.jpg" alt="Planner" className="w-14 h-14 object-cover rounded-xl shrink-0" />
                 <div>
-                  <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-wider">VISION AGENT</h3>
-                  <p className="text-[11px] text-slate-500 mt-0.5">Understands drawings, 3D BIM models & site conditions.</p>
+                  <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-wider">PLANNER AGENT</h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Plans and schedules project activities based on resource availability and constraints.</p>
                   <div className="mt-2 flex flex-wrap gap-1">
                     {['Plans', 'BIM', 'Photos'].map(t => (
                       <span key={t} className="px-2 py-0.5 bg-[#f1f4f9] text-slate-600 rounded-full text-[10px] font-medium">{t}</span>
@@ -891,7 +891,7 @@ export const ArchitectureFlow = () => {
                 <img src="/assets/project-illustration.jpg" alt="Validation" className="w-14 h-14 object-cover rounded-xl shrink-0" />
                 <div>
                   <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-wider">VALIDATION AGENT</h3>
-                  <p className="text-[11px] text-slate-500 mt-0.5">Detects conflicting specs between architectural and structural drawings.</p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Detects conflicting specs between architectural and structural drawings.(Future Scope)</p>
                   <div className="mt-2 flex flex-wrap gap-1">
                     {['Conflicts', 'Architectural', 'Structural'].map(t => (
                       <span key={t} className="px-2 py-0.5 bg-[#f1f4f9] text-slate-600 rounded-full text-[10px] font-medium">{t}</span>

@@ -11,7 +11,7 @@ export const AboutPage = () => {
         eyebrow="OUR MISSION & VISION"
         title="Pioneering Autonomous"
         highlightText="Construction Project Intelligence"
-        description="ProSight AI was founded by veteran construction project managers and AI researchers to solve the $1.6 Trillion global construction inefficiency crisis."
+        description="ProSight AI was founded by veteran construction planning engineer and AI researchers to solve the global construction inefficiency crisis."
       />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
