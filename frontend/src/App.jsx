@@ -22,6 +22,7 @@ import {formatProgress} from "./formatProgress";
 import {useSpecialistRuns,answerFields} from "./useSpecialistRuns";
 import ManpowerDashboard from "./ManpowerDashboard";
 import {BatchImport,ControlsResult} from "./ControlsReview";
+import SmartSelect from "./SmartSelect";
 
 const roles = {
   Employee: "employee",
@@ -29,51 +30,6 @@ const roles = {
   "Planning Engineer": "planning_engineer",
   Admin: "admin",
 };
-
-/** Accessible reusable selector for roles and projects. */
-function SmartSelect({ label, value, options, onChange, icon: Icon, className="", compact=false, disabled=false }) {
-  const [open,setOpen]=useState(false),[activeIndex,setActiveIndex]=useState(0);
-  const rootRef=useRef(null),triggerRef=useRef(null);
-  const selectedIndex=Math.max(0,options.findIndex(option=>option.value===value));
-  const selected=options[selectedIndex]||options[0];
-  useEffect(()=>{
-    if(!open)return;
-    const closeOutside=event=>{if(rootRef.current&&!rootRef.current.contains(event.target))setOpen(false)};
-    const closeEscape=event=>{if(event.key==="Escape"){setOpen(false);triggerRef.current?.focus()}};
-    document.addEventListener("pointerdown",closeOutside,true);document.addEventListener("keydown",closeEscape);
-    return()=>{document.removeEventListener("pointerdown",closeOutside,true);document.removeEventListener("keydown",closeEscape)};
-  },[open,selectedIndex]);
-  function choose(option){onChange(option.value);setOpen(false);triggerRef.current?.focus()}
-  function onKeyDown(event){
-    if(["ArrowDown","ArrowUp","Home","End","Enter"," ","Escape"].includes(event.key))event.preventDefault();
-    if(event.key==="Escape"){setOpen(false);return}
-    if(event.key==="Enter"||event.key===" "){
-      if(open&&options[activeIndex])choose(options[activeIndex]);else {setActiveIndex(selectedIndex);setOpen(true);}
-      return;
-    }
-    if(event.key==="Home"){setOpen(true);setActiveIndex(0);return}
-    if(event.key==="End"){setOpen(true);setActiveIndex(options.length-1);return}
-    if(event.key==="ArrowDown"){setOpen(true);setActiveIndex(index=>(index+1)%options.length)}
-    if(event.key==="ArrowUp"){setOpen(true);setActiveIndex(index=>(index-1+options.length)%options.length)}
-  }
-  return <div className={`smart-select ${className} ${compact?"compact":""}`} ref={rootRef}>
-    {label&&!compact&&<span className="smart-select-label">{label}</span>}
-    <button type="button" className="smart-select-trigger" ref={triggerRef} disabled={disabled}
-      role="combobox" aria-label={label||"Select an option"} aria-haspopup="listbox" aria-expanded={open}
-      aria-controls={open?`${className}-options`:undefined} aria-activedescendant={open?`${className}-option-${activeIndex}`:undefined}
-      onClick={()=>{if(!open)setActiveIndex(selectedIndex);setOpen(current=>!current)}} onKeyDown={onKeyDown}>
-      {Icon&&<Icon size={17}/>}<span className="smart-select-value"><b>{selected?.label}</b>{selected?.description&&<small>{selected.description}</small>}</span>
-      <ChevronDown className="select-chevron" size={16}/>
-    </button>
-    {open&&<div className="smart-select-menu" id={`${className}-options`} role="listbox" aria-label={label||"Options"}>
-      {options.map((option,index)=><button type="button" role="option" tabIndex={-1} aria-selected={option.value===value}
-        id={`${className}-option-${index}`} className={`${option.value===value?"selected":""} ${activeIndex===index?"active":""}`}
-        key={option.value||"all"} onMouseEnter={()=>setActiveIndex(index)} onClick={()=>choose(option)}>
-        <span><b>{option.label}</b>{option.description&&<small>{option.description}</small>}</span>{option.value===value&&<Check size={15}/>}
-      </button>)}
-    </div>}
-  </div>;
-}
 
 const nav = [
   ["assistant", "AI Assistant", Bot],
@@ -281,14 +237,13 @@ function Dashboard({ projects, goToAssistant, goToManpower }) {
     name: p.name.split(" ").slice(0, 2).join(" "),
     Baseline: p.baseline_progress, Revised: p.revised_progress, Actual: p.actual_progress,
   }));
-  // The prototype dataset contains snapshots rather than full history, so this
-  // illustrative trend should be replaced by progress_snapshots in production.
+  // Explicitly illustrative until governed historical progress snapshots exist.
   const trend = [
-    { month: "Nov", Revised: 22, Actual: 20 }, { month: "Dec", Revised: 28, Actual: 25 },
-    { month: "Jan", Revised: 34, Actual: 31 },
-    { month: "Feb", Revised: 40, Actual: 38 }, { month: "Mar", Revised: 47, Actual: 45 },
-    { month: "Apr", Revised: 55, Actual: 51 }, { month: "May", Revised: 61, Actual: 57 },
-    { month: "Jun", Revised: 67, Actual: 63 }, { month: "Jul", Revised: 72, Actual: 68.5 },
+    { month: "Nov", Revised: 3, Actual: 2 }, { month: "Dec", Revised: 8, Actual: 6 },
+    { month: "Jan", Revised: 16, Actual: 13 }, { month: "Feb", Revised: 29, Actual: 23 },
+    { month: "Mar", Revised: 45, Actual: 36 }, { month: "Apr", Revised: 62, Actual: 51 },
+    { month: "May", Revised: 78, Actual: 66 }, { month: "Jun", Revised: 90, Actual: 79 },
+    { month: "Jul", Revised: 97, Actual: 88 },
   ];
   const risk = [...delayed].sort((a, b) => a.variance_pct - b.variance_pct)[0];
   return <>
@@ -311,7 +266,7 @@ function Dashboard({ projects, goToAssistant, goToManpower }) {
         </div>)}
       </article>
       <article className="card chart-panel">
-        <div className="card-title"><h2>Schedule performance</h2><div className="range-selector" ref={rangeRef}>
+        <div className="card-title schedule-card-title"><div><div className="schedule-title-line"><h2>Schedule performance</h2><span>Illustrative</span></div><p>Sample S-curve — not live project history.</p></div><div className="range-selector" ref={rangeRef}>
           <button className="range-trigger" aria-haspopup="true" aria-expanded={rangeOpen} onClick={()=>setRangeOpen(open=>!open)}>
             Last {scheduleRange} months <ChevronDown size={14}/>
           </button>
@@ -325,8 +280,8 @@ function Dashboard({ projects, goToAssistant, goToManpower }) {
         <ResponsiveContainer width="100%" height={260}>
           <LineChart data={trend.slice(-scheduleRange)}><CartesianGrid strokeDasharray="3 3" vertical={false}/>
             <XAxis dataKey="month"/><YAxis domain={[0, 100]} tickFormatter={value=>formatProgress(value)}/><Tooltip formatter={value=>formatProgress(value)}/>
-            <Line dataKey="Revised" stroke="var(--chart-secondary)" strokeWidth={3} dot={false}/>
-            <Line dataKey="Actual" stroke="var(--chart-primary)" strokeWidth={3} dot={{r:3}}/>
+            <Line type="monotone" dataKey="Revised" stroke="var(--chart-secondary)" strokeWidth={3} dot={false}/>
+            <Line type="monotone" dataKey="Actual" stroke="var(--chart-primary)" strokeWidth={3} dot={{r:3}}/>
           </LineChart>
         </ResponsiveContainer>
       </article>
